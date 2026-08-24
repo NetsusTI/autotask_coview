@@ -272,6 +272,25 @@ export default defineBackground(() => {
           target: { tabId: tab.id },
           files: ['content-scripts/content.js'],
         }).catch(() => {});
+
+        // El puente del main world va aparte, con su propio `world`: reinyectar solo
+        // content.js dejaba al consumidor vivo pero sin nadie que volviera a publicar
+        // la identidad. Pasaba desapercibido porque el data-attribute de la ejecución
+        // previa seguía en el DOM — pero si el puente nunca había llegado a publicar,
+        // el técnico quedaba sin detección hasta refrescar la pestaña a mano.
+        //
+        // Va DESPUÉS y en su propio try: en Firefox (MV2) este archivo no se emite y
+        // `world` no existe, y un throw síncrono acá abortaría el resto del bucle —
+        // dejando pestañas sin reinyectar, que es peor que no tener puente.
+        if (import.meta.env.BROWSER !== 'firefox') {
+          try {
+            chrome.scripting.executeScript({
+              target: { tabId: tab.id },
+              files: ['content-scripts/walkme-bridge.js'],
+              world: 'MAIN',
+            }).catch(() => {});
+          } catch { /* API sin soporte de `world` — el puente declarado en el manifest sigue corriendo en cargas normales. */ }
+        }
       }
     });
   });

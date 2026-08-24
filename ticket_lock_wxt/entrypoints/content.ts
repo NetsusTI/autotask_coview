@@ -13,6 +13,8 @@ import type { OtherUser, TicketState, TicketWarnings, PanelToContentMessage } fr
 import { renderBanner, removeBanner } from '@/lib/banner';
 import { renderInsightWidget, removeInsightWidget } from '@/lib/insight-widget';
 import { showNotifToast } from '@/lib/notif-toast';
+import { readNameFrom } from '@/lib/identity';
+import { IDENTITY_DATASET_KEY, IDENTITY_PUBLISH_WINDOW_MS, IDENTITY_POLL_INTERVAL_MS } from '@/lib/identity-bridge';
 
 export default defineContentScript({
   matches: ['https://*.autotask.net/*'],
@@ -258,27 +260,32 @@ export default defineContentScript({
       // undefined siempre (en la consola de DevTools sí se ve, porque evalúa en el
       // main world). Por eso entrypoints/walkme-bridge.content.ts corre en el main
       // world y nos deja el nombre en un data-attribute, que sí cruza la pared.
-      const bridged = document.documentElement.dataset.netsusCoviewUser;
-      if (bridged && bridged.trim()) return bridged.trim();
+      // El puente valida el valor antes de publicarlo (readNameFrom), pero lo
+      // revalidamos acá: el atributo vive en el DOM de la página y cualquier script
+      // —de Autotask o de otra extensión— puede escribirlo. No es la frontera de
+      // seguridad (esa es sanitizeUser() en el servidor), es no propagar basura.
+      const bridged = readNameFrom({
+        narrativeFullName: document.documentElement.dataset[IDENTITY_DATASET_KEY],
+      });
+      if (bridged) return bridged;
 
-      // Firefox se buildea como MV2, donde no hay content scripts en el main world;
-      // a cambio deja atravesar el Xray wrapper con wrappedJSObject. En Chrome/Edge
-      // esto es undefined y no molesta.
+      // Firefox se buildea como MV2, donde no hay content scripts en el main world
+      // (por eso el puente se excluye de ese build); a cambio deja atravesar el Xray
+      // wrapper con wrappedJSObject. En Chrome/Edge esto es undefined y no molesta.
+      // NOTA: esta rama no está verificada en un Firefox real — ver README.
       try {
-        const wmd = (window as any).wrappedJSObject?.walkMeData;
-        if (typeof wmd?.narrativeFullName === 'string' && wmd.narrativeFullName.trim()) {
-          return wmd.narrativeFullName.trim();
-        }
-        if (wmd?.firstName && wmd?.lastName) {
-          return `${wmd.firstName} ${wmd.lastName}`.trim();
-        }
+        return readNameFrom((window as any).wrappedJSObject?.walkMeData);
       } catch {
-        // Xray/wrappedJSObject no está disponible o tiró — seguimos sin nombre.
+        // Xray/wrappedJSObject no disponible o lanzó — seguimos sin nombre.
+        return null;
       }
-      return null;
     }
 
-    let userRetryCount = 0;
+    // Momento en que esta instancia empezó a buscar identidad. El corte es por TIEMPO
+    // y no por número de reintentos para poder compartir presupuesto con el puente
+    // (lib/identity-bridge.ts): antes el puente insistía ~20 s y esto dejaba de mirar
+    // a los ~16 s, así que un Autotask lento publicaba el nombre cuando ya nadie leía.
+    const identitySearchStartedAt = Date.now();
 
     function loadUserAndInit() {
       safeChrome(() => chrome.storage.local.get(['netsus_user', 'netsus_user_auto', 'netsus_sound'], ({ netsus_user, netsus_user_auto, netsus_sound }: { netsus_user?: string; netsus_user_auto?: boolean; netsus_sound?: string }) => {
@@ -293,9 +300,8 @@ export default defineContentScript({
         } else if (netsus_user) {
           currentUser = netsus_user;
           init();
-        } else if (userRetryCount < 10) {
-          userRetryCount++;
-          setTimeout(loadUserAndInit, 1500);
+        } else if (Date.now() - identitySearchStartedAt < IDENTITY_PUBLISH_WINDOW_MS) {
+          setTimeout(loadUserAndInit, IDENTITY_POLL_INTERVAL_MS);
         } else {
           init();
         }

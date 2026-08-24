@@ -109,6 +109,33 @@ en la vista "workspace" de Autotask con varios tickets abiertos, el id de la
 URL (`ids[0]=`) puede diferir entre dos técnicos aunque miren el mismo ticket —
 ver el comentario en `content.ts` (`presenceId()`).
 
+#### Cómo se resuelve QUIÉN es el técnico (la barrera de los dos mundos)
+
+Autotask deja los datos del usuario logueado en `window.walkMeData` (los pone la
+propia página para alimentar al widget de WalkMe; los 403 de
+`walkme.psa.datto.com` en consola son ruido de Datto y **no** afectan a esto).
+
+El detalle que costó un incidente en producción: los content scripts corren en un
+**isolated world**. Comparten el DOM con la página pero **no sus variables
+globales**, así que `window.walkMeData` desde `content.ts` es *siempre*
+`undefined` — aunque la consola de DevTools la muestre poblada, porque el
+contexto `top` de DevTools evalúa en el **main world**. Mirando el mismo dato
+desde lados opuestos de la pared se ve distinto. Resultado: la auto-detección
+nunca funcionó, los 16 técnicos quedaban sin nombre y por lo tanto **sin
+detección de colisiones**, en silencio.
+
+El puente que lo resuelve:
+
+| Pieza | Mundo | Rol |
+|---|---|---|
+| `entrypoints/walkme-bridge.content.ts` | MAIN | Lee `walkMeData` y publica el nombre en `data-netsus-coview-user` del `<html>`. Solo Chrome/Edge (`include: ['chrome','edge']`) — `world` no existe en MV2 y AMO puede rechazar la clave. |
+| `entrypoints/content.ts` (`getUserFromDOM`) | ISOLATED | Lee ese data-attribute. En Firefox usa `wrappedJSObject` como equivalente. |
+| `lib/identity.ts` | — | `readNameFrom()`: función pura que interpreta la forma de `walkMeData`. Único punto acoplado a una estructura de terceros no contractual → es la que tiene tests (`lib/identity.test.ts`). |
+| `lib/identity-bridge.ts` | — | Contrato compartido: nombre del atributo y ventana de reintentos. Ambos lados **deben** usar el mismo presupuesto; cuando estaban hardcodeados por separado el puente publicaba después de que el consumidor dejaba de mirar. |
+
+> **No verificado:** la rama de Firefox (`wrappedJSObject`) no se probó en un
+> Firefox real. Si se retoma ese soporte, es lo primero que hay que comprobar.
+
 ### Backend (Next.js / Vercel, `app/`, `src/`)
 
 Next.js 16 (App Router), TypeScript, desplegado en Vercel. Toda la lógica de

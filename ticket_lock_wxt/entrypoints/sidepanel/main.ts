@@ -5,8 +5,6 @@ import {
   markAllRead,
   markRead,
   unreadCount,
-  getRenagMinutes,
-  RENAG_MIN_KEY,
   SEVERITY_COLOR,
   type AppNotification,
 } from '@/lib/notifications';
@@ -370,7 +368,6 @@ settingsBtn.addEventListener('click', () => {
 });
 
 document.getElementById('soundLabel')!.innerHTML = icon('volume-2', { size: 13 }) + ' Sonido de alerta';
-document.getElementById('renagLabel')!.innerHTML = icon('bell', { size: 13 }) + ' Re-avisar cada';
 // El selector de tema se movió al header (ver index.html) — ya no lleva label,
 // se entiende solo por los botones Auto/☀/🌙.
 document.getElementById('prefsSummary')!.innerHTML = icon('bell', { size: 12 }) + ' Tipos de notificación';
@@ -382,9 +379,6 @@ nameWarningEl.innerHTML = `<span style="display:inline-flex;vertical-align:middl
 const avatarEl = document.getElementById('avatar') as HTMLDivElement;
 const currentEl = document.getElementById('current') as HTMLDivElement;
 const autoLabelEl = document.getElementById('autoLabel') as HTMLDivElement;
-const nameInputEl = document.getElementById('nameInput') as HTMLInputElement;
-const saveBtnEl = document.getElementById('saveBtn') as HTMLButtonElement;
-const saveStatusEl = document.getElementById('saveStatus') as HTMLDivElement;
 const soundToggleEl = document.getElementById('soundToggle') as HTMLInputElement;
 
 function initials(name: string): string {
@@ -393,10 +387,9 @@ function initials(name: string): string {
 function showUser(name: string, isAuto: boolean) {
   avatarEl.textContent = initials(name);
   currentEl.textContent = name;
+  // `isAuto` sigue distinguiendo el origen: aunque ya no se puede escribir el nombre
+  // a mano, quedan técnicos con un `netsus_user_auto: false` guardado de antes.
   autoLabelEl.textContent = isAuto ? 'Detectado automáticamente desde Autotask' : 'Configurado manualmente';
-  // Si el técnico está tipeando su nombre justo cuando llega la auto-detección,
-  // no le pisamos lo que escribió a mitad de camino.
-  if (document.activeElement !== nameInputEl) nameInputEl.value = name;
 }
 chrome.storage.local.get(['netsus_user', 'netsus_user_auto', 'netsus_sound'], ({ netsus_user, netsus_user_auto, netsus_sound }: { netsus_user?: string; netsus_user_auto?: boolean; netsus_sound?: string }) => {
   if (netsus_user) {
@@ -408,9 +401,6 @@ chrome.storage.local.get(['netsus_user', 'netsus_user_auto', 'netsus_sound'], ({
     autoLabelEl.textContent = 'Abre un ticket para detectar automáticamente';
     avatarEl.textContent = '?';
     nameWarningEl.style.display = 'block';
-    // Sin nombre detectado, el técnico SÍ necesita ver el campo — no tiene sentido
-    // dejarlo colapsado detrás de "Cambiar nombre manualmente" en este caso.
-    document.getElementById('nameDetails')?.setAttribute('open', '');
   }
   soundToggleEl.checked = netsus_sound !== 'off';
 });
@@ -432,15 +422,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 soundToggleEl.addEventListener('change', () => {
   chrome.storage.local.set({ netsus_sound: soundToggleEl.checked ? 'on' : 'off' });
-});
-saveBtnEl.addEventListener('click', () => {
-  const name = nameInputEl.value.trim();
-  if (!name) return;
-  chrome.storage.local.set({ netsus_user: name, netsus_user_auto: false }, () => {
-    showUser(name, false);
-    saveStatusEl.textContent = '✓ Guardado';
-    setTimeout(() => (saveStatusEl.textContent = ''), 2000);
-  });
 });
 
 document.getElementById('adminBtn')?.addEventListener('click', () => {
@@ -490,16 +471,9 @@ document.addEventListener('click', () => { dndMenu.style.display = 'none'; });
 refreshDnd();
 setInterval(refreshDnd, 30000); // actualizar estado cuando expire el DND
 
-// --- Auto-aviso configurable ---
-const autoPingInputEl = document.getElementById('autoPingInput') as HTMLInputElement;
-chrome.storage.local.get(['netsus_auto_ping_min'], (data: any) => {
-  autoPingInputEl.value = String(data.netsus_auto_ping_min || 5);
-});
-autoPingInputEl.addEventListener('change', () => {
-  const v = Math.max(1, Math.min(60, parseInt(autoPingInputEl.value) || 5));
-  autoPingInputEl.value = String(v);
-  chrome.storage.local.set({ netsus_auto_ping_min: v });
-});
+// El auto-aviso ya no se configura desde el panel: sigue funcionando con su valor
+// por omisión (5 min, ver AUTO_PING_MINUTES en content.ts). Si algún técnico tiene
+// un `netsus_auto_ping_min` guardado de antes, se sigue respetando.
 
 // --- Activos ahora ---
 async function refreshActiveTechs() {
@@ -653,14 +627,9 @@ feedbackSubmitEl.addEventListener('click', async () => {
   setTimeout(() => (feedbackStatusEl.textContent = ''), 3000);
 });
 
-const renagInputEl = document.getElementById('renagInput') as HTMLInputElement;
-getRenagMinutes().then((m) => { renagInputEl.value = String(m); });
-renagInputEl.addEventListener('change', () => {
-  let v = parseInt(renagInputEl.value) || 3;
-  v = Math.max(1, Math.min(60, v));
-  renagInputEl.value = String(v);
-  chrome.storage.local.set({ [RENAG_MIN_KEY]: v });
-});
+// El re-aviso ya no se configura desde el panel: sigue corriendo con su valor por
+// omisión (ver getRenagMinutes() en lib/notifications.ts), y respeta el que ya
+// tuviera guardado un técnico.
 
 function highlightThemeSeg(pref: ThemePref) {
   document.querySelectorAll<HTMLButtonElement>('#themeSeg button').forEach((b) => {

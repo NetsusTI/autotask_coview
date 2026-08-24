@@ -208,43 +208,21 @@
         <div id="autoLabel" class="auto-label"></div>
       </div>
     </div>
-    <div id="nameWarning" class="name-warning" style="display:none">Nombre no detectado — escríbelo manualmente</div>
-    <details class="prefs-details" id="nameDetails" style="border-top:none;padding-top:0;margin-top:0">
-      <summary style="font-size:11px;color:var(--dim);cursor:pointer;list-style:none;padding:6px 0;display:flex;align-items:center;gap:5px">
-        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-        Cambiar nombre manualmente
-      </summary>
-      <input id="nameInput" class="settings-panel-input" type="text" placeholder="Ej: Ricardo Illanes" style="margin-top:6px" />
-      <button class="btn block" id="saveBtn">Guardar</button>
-      <div id="saveStatus" class="save-status"></div>
-    </details>
+    <!-- El nombre se resuelve solo desde Autotask (ver README, "la barrera de los dos
+         mundos"). Ya no hay campo manual: este aviso es la única señal si falla, y por
+         eso NO dice "escríbelo a mano" — no habría dónde. -->
+    <div id="nameWarning" class="name-warning" style="display:none">Nombre no detectado — abre un ticket de Autotask</div>
 
     <div class="settings-row">
       <span id="soundLabel">Sonido de alerta</span>
       <label class="toggle"><input type="checkbox" id="soundToggle" checked><span class="tgl-slider"></span></label>
     </div>
-    <div class="settings-row">
-      <span>Auto-aviso después de</span>
-      <div style="display:flex;align-items:center;gap:5px">
-        <input id="autoPingInput" type="number" min="1" max="60" value="5" style="width:48px;padding:4px 6px;text-align:center;font-size:12px;font-family:inherit;border:1px solid var(--border);border-radius:6px;background:var(--card-bg);color:var(--text)" />
-        <span style="color:var(--dim);font-size:12px">min</span>
-      </div>
-    </div>
+    <!-- "Opciones avanzadas" envolvía solo "Re-avisar cada" y "Tipos de notificación".
+         Quitado el primero, un desplegable dentro de otro desplegable para un único
+         ítem era ruido: "Tipos de notificación" sube un nivel. -->
     <details class="prefs-details" style="margin-top:4px">
-      <summary style="font-size:11px;color:var(--dim);cursor:pointer;list-style:none;padding:6px 0;display:flex;align-items:center;gap:5px">
-        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-        Opciones avanzadas
-      </summary>
-      <div class="settings-row">
-        <span id="renagLabel">Re-avisar cada</span>
-        <div style="display:flex;align-items:center;gap:5px">
-          <input id="renagInput" type="number" min="1" max="60" value="3" /> <span style="color:var(--dim)">min</span>
-        </div>
-      </div>
-      <details class="prefs-details">
-        <summary id="prefsSummary">Tipos de notificación</summary>
-        <div id="typePrefsList"></div>
-      </details>
+      <summary id="prefsSummary">Tipos de notificación</summary>
+      <div id="typePrefsList"></div>
     </details>
   </div>
 

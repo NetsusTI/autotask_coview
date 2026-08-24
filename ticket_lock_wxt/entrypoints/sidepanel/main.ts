@@ -394,7 +394,9 @@ function showUser(name: string, isAuto: boolean) {
   avatarEl.textContent = initials(name);
   currentEl.textContent = name;
   autoLabelEl.textContent = isAuto ? 'Detectado automáticamente desde Autotask' : 'Configurado manualmente';
-  nameInputEl.value = name;
+  // Si el técnico está tipeando su nombre justo cuando llega la auto-detección,
+  // no le pisamos lo que escribió a mitad de camino.
+  if (document.activeElement !== nameInputEl) nameInputEl.value = name;
 }
 chrome.storage.local.get(['netsus_user', 'netsus_user_auto', 'netsus_sound'], ({ netsus_user, netsus_user_auto, netsus_sound }: { netsus_user?: string; netsus_user_auto?: boolean; netsus_sound?: string }) => {
   if (netsus_user) {
@@ -411,6 +413,22 @@ chrome.storage.local.get(['netsus_user', 'netsus_user_auto', 'netsus_sound'], ({
     document.getElementById('nameDetails')?.setAttribute('open', '');
   }
   soundToggleEl.checked = netsus_sound !== 'off';
+});
+// El nombre puede llegar DESPUÉS de que el panel se abrió: el content script lo
+// resuelve recién al cargar un ticket (ver walkme-bridge.content.ts), y el panel
+// suele estar abierto desde antes. Sin este listener, el "Sin nombre detectado"
+// del arranque se quedaba fijo para siempre — la presencia ya andaba con el
+// nombre correcto, pero el panel seguía pidiéndolo a mano.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes.netsus_user) return;
+  const name = changes.netsus_user.newValue as string | undefined;
+  if (!name) return;
+  chrome.storage.local.get(['netsus_user_auto'], ({ netsus_user_auto }: { netsus_user_auto?: boolean }) => {
+    showUser(name, !!netsus_user_auto);
+    nameWarningEl.style.display = 'none';
+    loadMyStats(name);
+    loadRecentHistory(name);
+  });
 });
 soundToggleEl.addEventListener('change', () => {
   chrome.storage.local.set({ netsus_sound: soundToggleEl.checked ? 'on' : 'off' });

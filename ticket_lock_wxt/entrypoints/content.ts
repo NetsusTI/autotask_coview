@@ -252,13 +252,28 @@ export default defineContentScript({
     }
 
     function getUserFromDOM(): string | null {
-      // Autotask expone el nombre del usuario logueado en window.walkMeData
-      const wmd = (window as any).walkMeData;
-      if (wmd?.narrativeFullName && typeof wmd.narrativeFullName === 'string') {
-        return wmd.narrativeFullName.trim();
-      }
-      if (wmd?.firstName && wmd?.lastName) {
-        return `${wmd.firstName} ${wmd.lastName}`.trim();
+      // Autotask expone el nombre del usuario logueado en window.walkMeData, PERO en
+      // el main world de la página. Este content script vive en el isolated world:
+      // comparte el DOM, no las globales, así que leer window.walkMeData acá devuelve
+      // undefined siempre (en la consola de DevTools sí se ve, porque evalúa en el
+      // main world). Por eso entrypoints/walkme-bridge.content.ts corre en el main
+      // world y nos deja el nombre en un data-attribute, que sí cruza la pared.
+      const bridged = document.documentElement.dataset.netsusCoviewUser;
+      if (bridged && bridged.trim()) return bridged.trim();
+
+      // Firefox se buildea como MV2, donde no hay content scripts en el main world;
+      // a cambio deja atravesar el Xray wrapper con wrappedJSObject. En Chrome/Edge
+      // esto es undefined y no molesta.
+      try {
+        const wmd = (window as any).wrappedJSObject?.walkMeData;
+        if (typeof wmd?.narrativeFullName === 'string' && wmd.narrativeFullName.trim()) {
+          return wmd.narrativeFullName.trim();
+        }
+        if (wmd?.firstName && wmd?.lastName) {
+          return `${wmd.firstName} ${wmd.lastName}`.trim();
+        }
+      } catch {
+        // Xray/wrappedJSObject no está disponible o tiró — seguimos sin nombre.
       }
       return null;
     }

@@ -13,7 +13,7 @@ export default defineConfig({
     // chrome://extensions, si Chrome está corriendo el build nuevo o uno viejo.
     // Además: en Chrome/Edge esta es la versión que decide si hay auto-update —
     // ver release/README.md. Sin subirla, un release nuevo no se propaga solo.
-    version: '1.5.6',
+    version: '1.5.7',
     description: 'Detecta colisiones entre técnicos trabajando en el mismo ticket de Autotask',
     // 'alarms' es imprescindible: sin él chrome.alarms queda undefined y la llamada
     // a chrome.alarms.create() del keep-alive tira un TypeError síncrono que mata al

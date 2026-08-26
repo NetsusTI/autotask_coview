@@ -346,6 +346,17 @@ export default defineBackground(() => {
       return false;
     }
 
+    // El content script no puede cerrar su propia pestaña: window.close() solo
+    // funciona en pestañas que un script abrió con window.open(), no en una que el
+    // técnico abrió a mano — así que nos pide a nosotros, que sí tenemos permiso
+    // 'tabs'. Se dispara desde triggerFinish() al declarar "Terminé" durante una
+    // colisión, para que no se quede editando en la misma pestaña que acaba de
+    // liberar.
+    if (message?.type === 'NSB_CLOSE_TAB') {
+      if (_sender.tab?.id) chrome.tabs.remove(_sender.tab.id).catch(() => {});
+      return false;
+    }
+
     // Los content scripts no tienen acceso a chrome.notifications, así que nos
     // piden a nosotros que creemos el pop-up del sistema.
     if (message?.type === 'NETSUS_NOTIFY') {

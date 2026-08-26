@@ -495,24 +495,65 @@ export default defineContentScript({
     // in-page (lib/banner.ts) sí es parte del body y necesita quedar afuera del
     // bloqueo para que sus propios botones (Avisar/Pausar/Terminé) sigan
     // funcionando durante la colisión que ellos mismos ayudan a resolver.
-    function lockUI() {
-      if (document.getElementById('netsus-lock-style')) return;
-      const style = document.createElement('style');
-      style.id = 'netsus-lock-style';
-      style.textContent = `
-        body.netsus-locked button:not(#netsus-banner *):not(#netsus-assign-pill *),
-        body.netsus-locked textarea:not(#netsus-banner *):not(#netsus-assign-pill *),
-        body.netsus-locked input:not([type="search"]):not([type="text"][readonly]):not(#netsus-banner *):not(#netsus-assign-pill *) {
-          pointer-events: none !important; opacity: 0.45 !important; cursor: not-allowed !important;
+    //
+    // El editor de Autotask (descripción, resolución, adjuntos...) vive en un
+    // <iframe> same-origin dentro de TicketDetail.mvc, no en el documento top. El
+    // content script solo se inyecta ahí (allFrames no está declarado → default
+    // false), así que este bloqueo tenía que alcanzar cada iframe explícitamente:
+    // antes solo tocaba `document`, y como resultado el aviso y el sonido andaban
+    // pero se seguía pudiendo editar/guardar el ticket durante una colisión.
+    const LOCK_STYLE_ID = 'netsus-lock-style';
+    const LOCK_CSS = `
+      body.netsus-locked button:not(#netsus-banner *):not(#netsus-assign-pill *),
+      body.netsus-locked textarea:not(#netsus-banner *):not(#netsus-assign-pill *),
+      body.netsus-locked input:not([type="search"]):not([type="text"][readonly]):not(#netsus-banner *):not(#netsus-assign-pill *) {
+        pointer-events: none !important; opacity: 0.45 !important; cursor: not-allowed !important;
+      }
+    `;
+
+    // Recorre `document` y, recursivamente, todo iframe alcanzable desde ahí. Un
+    // iframe de otro origen tira al leer `.contentDocument` (same-origin policy
+    // del navegador, no de la extensión) — nada que hacer ahí, se salta en silencio.
+    function forEachAutotaskDocument(fn: (doc: Document) => void) {
+      const walk = (doc: Document) => {
+        fn(doc);
+        let frames: HTMLCollectionOf<HTMLIFrameElement>;
+        try {
+          frames = doc.getElementsByTagName('iframe');
+        } catch {
+          return;
         }
-      `;
-      document.head.appendChild(style);
-      document.body.classList.add('netsus-locked');
+        for (const frame of Array.from(frames)) {
+          let inner: Document | null = null;
+          try {
+            inner = frame.contentDocument;
+          } catch {
+            // cross-origin — fuera de alcance, no es un error nuestro.
+          }
+          if (inner) walk(inner);
+        }
+      };
+      walk(document);
+    }
+
+    function lockUI() {
+      forEachAutotaskDocument((doc) => {
+        if (!doc.head || !doc.body) return;
+        if (!doc.getElementById(LOCK_STYLE_ID)) {
+          const style = doc.createElement('style');
+          style.id = LOCK_STYLE_ID;
+          style.textContent = LOCK_CSS;
+          doc.head.appendChild(style);
+        }
+        doc.body.classList.add('netsus-locked');
+      });
     }
 
     function unlockUI() {
-      document.body.classList.remove('netsus-locked');
-      document.getElementById('netsus-lock-style')?.remove();
+      forEachAutotaskDocument((doc) => {
+        doc.body?.classList.remove('netsus-locked');
+        doc.getElementById(LOCK_STYLE_ID)?.remove();
+      });
     }
 
     function startAutoPing(others: OtherUser[]) {
@@ -609,6 +650,12 @@ export default defineContentScript({
 
     function triggerFinish() {
       if (currentTicketId && currentUser) {
+        // "Terminé" solo aparece en el banner/panel DURANTE una colisión (ver
+        // lib/banner.ts y sidepanel/main.ts) — es el botón de "dar paso al
+        // compañero". Se captura acá, antes de resetear wasLocked más abajo, para
+        // no cerrar la pestaña si esta función se llamara alguna vez fuera de ese
+        // contexto.
+        const wasCollision = wasLocked;
         if (lastPresenceId) leavePresence(lastPresenceId, currentUser);
         clearInterval(pollInterval);
         clearTimeout(autoPingTimer);
@@ -617,6 +664,17 @@ export default defineContentScript({
         currentTicketId = null;
         lastPresenceId = null;
         setState({ kind: 'idle' });
+
+        // A pedido explícito: sin esto, el técnico que declaró "Terminé" podía
+        // quedarse en la misma pestaña y seguir editando — recreando la colisión
+        // que el clic acababa de resolver. Con un pequeño margen para que se
+        // alcance a ver el aviso, en vez de que la pestaña desaparezca de golpe.
+        if (wasCollision) {
+          sendChromeNotification('Ticket liberado', 'Cerrando esta pestaña…');
+          setTimeout(() => {
+            safeChrome(() => browser.runtime.sendMessage({ type: 'NSB_CLOSE_TAB' }));
+          }, 1200);
+        }
       }
     }
 
@@ -673,6 +731,14 @@ export default defineContentScript({
       if (pingTargets?.length) body.ping = pingTargets;
 
       apiCall('POST', `/api/presence/${ticketId}`, body, (_status, data) => {
+        // apiCall es asíncrono (viaja por chrome.runtime.sendMessage hasta el
+        // background y vuelve) — si el técnico hace clic en "Terminé" MIENTRAS esta
+        // respuesta viaja, triggerFinish() ya limpió currentTicketId/lastPresenceId
+        // antes de que llegue, pero el callback seguía ejecutándose igual: si esa
+        // respuesta tardía traía `others`, sonaba la alerta de colisión DESPUÉS de
+        // haber liberado el ticket. Este guard descarta cualquier respuesta que ya
+        // no corresponda al ticket que seguimos mirando ahora mismo.
+        if (stopped || currentTicketId === null || ticketId !== lastPresenceId) return;
         if (data?.completed === true) {
           setState({ kind: 'completed', ticketLabel: ticketLabel() });
           // El ticket está en solo lectura — no tiene sentido la advertencia de
@@ -799,6 +865,12 @@ export default defineContentScript({
         lastUrl = location.href;
         setTimeout(loadUserAndInit, 500);
       }
+      // Si Autotask carga el iframe del editor DESPUÉS de que ya estábamos
+      // bloqueados (ej. el técnico hace clic en "Editar" en medio de la colisión),
+      // ese iframe nace sin el bloqueo — lockUI() ya se había ejecutado antes de
+      // que existiera. Re-aplicar es barato: lockUI() no reinyecta el <style> si ya
+      // está, solo confirma la clase en cada documento alcanzable.
+      if (wasLocked) lockUI();
     });
     urlObserver.observe(document.body, { childList: true, subtree: true });
 

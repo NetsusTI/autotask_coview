@@ -29,18 +29,29 @@ interface FeedItem {
   dedupeKey?: string;
 }
 
-function getStoredUser(): Promise<string | null> {
+// chrome.storage.local.get() normalmente siempre entrega un objeto (vacío si no hay
+// nada guardado), pero en una carrera con el service worker reiniciándose (MV3 lo
+// suspende tras ~30s de inactividad y lo despierta bajo demanda) puede resolver con
+// `undefined` en vez de `{}` — eso es lo que producía "Cannot destructure property
+// '...' of 'undefined'" en getConfig() más abajo. Este wrapper normaliza ese caso y de
+// paso lee chrome.runtime.lastError explícitamente: si no se toca, Chrome reporta un
+// "Unchecked runtime.lastError" aparte por cada llamada donde hubo error.
+function storageGet<T extends Record<string, unknown>>(keys: string[]): Promise<Partial<T>> {
   return new Promise((resolve) => {
-    chrome.storage.local.get(['netsus_user'], ({ netsus_user }: { netsus_user?: string }) => resolve(netsus_user || null));
+    chrome.storage.local.get(keys, (data) => {
+      void chrome.runtime.lastError;
+      resolve((data ?? {}) as Partial<T>);
+    });
   });
 }
 
+function getStoredUser(): Promise<string | null> {
+  return storageGet<{ netsus_user: string }>(['netsus_user']).then(({ netsus_user }) => netsus_user || null);
+}
+
 async function isDnd(): Promise<boolean> {
-  return new Promise((resolve) => {
-    chrome.storage.local.get(['netsus_dnd_until'], (data: any) => {
-      resolve(typeof data.netsus_dnd_until === 'number' && data.netsus_dnd_until > Date.now());
-    });
-  });
+  const { netsus_dnd_until } = await storageGet<{ netsus_dnd_until: number }>(['netsus_dnd_until']);
+  return typeof netsus_dnd_until === 'number' && netsus_dnd_until > Date.now();
 }
 
 async function pollNotificationFeed() {
@@ -85,9 +96,7 @@ async function pollNotificationFeed() {
 }
 
 function getHeartbeat(): Promise<number | undefined> {
-  return new Promise((resolve) => {
-    chrome.storage.local.get(['netsus_cs_heartbeat'], ({ netsus_cs_heartbeat }: { netsus_cs_heartbeat?: number }) => resolve(netsus_cs_heartbeat));
-  });
+  return storageGet<{ netsus_cs_heartbeat: number }>(['netsus_cs_heartbeat']).then(({ netsus_cs_heartbeat }) => netsus_cs_heartbeat);
 }
 
 async function backgroundRenag() {
@@ -109,14 +118,13 @@ async function backgroundRenag() {
 }
 
 async function getConfig(): Promise<{ baseUrl: string; apiKey: string }> {
-  return new Promise((resolve) => {
-    chrome.storage.local.get(['netsus_base_url', 'netsus_api_key'], ({ netsus_base_url, netsus_api_key }: { netsus_base_url?: string; netsus_api_key?: string }) => {
-      resolve({
-        baseUrl: netsus_base_url || DEFAULT_BASE_URL,
-        apiKey: netsus_api_key || DEFAULT_API_KEY,
-      });
-    });
-  });
+  const { netsus_base_url, netsus_api_key } = await storageGet<{ netsus_base_url: string; netsus_api_key: string }>(
+    ['netsus_base_url', 'netsus_api_key'],
+  );
+  return {
+    baseUrl: netsus_base_url || DEFAULT_BASE_URL,
+    apiKey: netsus_api_key || DEFAULT_API_KEY,
+  };
 }
 
 async function fetchWithRetry(url: string, options: RequestInit, maxAttempts = 3): Promise<Response> {
@@ -173,16 +181,14 @@ async function checkNewAssignments() {
   if (!name) return;
   const { baseUrl: BASE_URL, apiKey: API_KEY } = await getConfig();
 
-  const stored = await new Promise<{ ids: number[]; ready: boolean; last: number }>((resolve) => {
-    chrome.storage.local.get(
-      ['netsus_seen_tickets', 'netsus_assign_ready', 'netsus_assign_last'],
-      (data: any) => resolve({
-        ids: Array.isArray(data.netsus_seen_tickets) ? data.netsus_seen_tickets : [],
-        ready: !!data.netsus_assign_ready,
-        last: data.netsus_assign_last || 0,
-      }),
-    );
-  });
+  const assignData = await storageGet<{ netsus_seen_tickets: number[]; netsus_assign_ready: boolean; netsus_assign_last: number }>(
+    ['netsus_seen_tickets', 'netsus_assign_ready', 'netsus_assign_last'],
+  );
+  const stored = {
+    ids: Array.isArray(assignData.netsus_seen_tickets) ? assignData.netsus_seen_tickets : [],
+    ready: !!assignData.netsus_assign_ready,
+    last: assignData.netsus_assign_last || 0,
+  };
 
   const seenIds = new Set<number>(stored.ids);
   const sinceParam = stored.ready

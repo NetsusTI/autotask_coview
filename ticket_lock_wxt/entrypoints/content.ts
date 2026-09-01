@@ -365,27 +365,37 @@ export default defineContentScript({
     // Un solo AudioContext reutilizado para todos los sonidos. Antes se creaba uno
     // NUEVO en cada llamada a playSound() y nunca se cerraba (fuga), y además Chrome
     // bloquea que un AudioContext arranque sin que haya habido un gesto del usuario en
-    // la página todavía ("AudioContext was not allowed to start" en consola) — afecta
-    // sobre todo a la alerta de colisión, que llega sola por polling cada 5s, sin que
-    // el técnico haya clickeado nada. Se intenta destrabar apenas hay cualquier
-    // interacción real con la página, para que ya esté 'running' cuando llegue el
-    // primer sonido automático (en la práctica, casi siempre: entrar a un ticket ya
-    // implica scroll/click).
+    // la página todavía ("AudioContext was not allowed to start" en consola).
+    //
+    // Ojo: ese warning lo dispara el simple `new AudioContext()`, no recién al intentar
+    // programar un sonido — así que no alcanza con chequear ctx.state después de
+    // crearlo, hay que evitar CREARLO hasta que conste que hubo un gesto real. Esto
+    // importa en particular acá: el content script corre en TODO *.autotask.net, no
+    // solo en tickets — incluida la pantalla de login (Authentication.mvc). Si llega
+    // un aviso pendiente (ej. una asignación nueva) mientras el técnico recién está
+    // por loguearse, sin haber tocado nada todavía, se intentaba sonar ahí mismo.
     let audioCtx: AudioContext | null = null;
-    function getAudioContext(): AudioContext {
+    let hasUserGesture = false;
+    function markUserGesture() {
+      hasUserGesture = true;
+      getAudioContext(); // crear/destrabar ya mismo, para no esperar al próximo sonido
+    }
+    document.addEventListener('pointerdown', markUserGesture, { once: true, passive: true });
+    document.addEventListener('keydown', markUserGesture, { once: true });
+
+    function getAudioContext(): AudioContext | null {
+      if (!hasUserGesture) return null;
       if (!audioCtx) audioCtx = new AudioContext();
       if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
       return audioCtx;
     }
-    document.addEventListener('pointerdown', () => getAudioContext(), { once: true, passive: true });
-    document.addEventListener('keydown', () => getAudioContext(), { once: true });
 
     function playSound(type: 'alert' | 'free' | 'ping' | 'new_entry') {
       const ctx = getAudioContext();
-      // Seguimos bloqueados por la política de autoplay (todavía no hubo ningún gesto
-      // en la página): no hay sonido, pero tampoco el error en consola — antes tampoco
-      // sonaba en este caso, solo que además lo reportaba como fallo.
-      if (ctx.state !== 'running') return;
+      // Sin gesto todavía, o el navegador lo sigue bloqueando pese al resume(): no hay
+      // sonido, pero tampoco el error en consola — antes tampoco sonaba en este caso,
+      // solo que además lo reportaba como fallo.
+      if (!ctx || ctx.state !== 'running') return;
       const gain = ctx.createGain();
       gain.connect(ctx.destination);
       if (type === 'alert') {

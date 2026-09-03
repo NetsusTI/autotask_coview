@@ -1,9 +1,6 @@
 import {
   add as addNotif,
   getAll as getNotifs,
-  dueForRenag,
-  getRenagMinutes,
-  bumpNag,
   subscribe as subscribeNotifs,
   SILENT_TYPES,
   type Severity,
@@ -53,7 +50,6 @@ export default defineContentScript({
       }));
     }
 
-    let renagTimer: number | undefined;
     let typePrefs: TypePrefs = {};
     // Espejo local del buzón — alimenta la tarjeta embebida (lib/insight-widget.ts).
     // Se mantiene al día vía subscribeNotifs() (chrome.storage.onChanged), sin polling propio.
@@ -114,7 +110,6 @@ export default defineContentScript({
     function teardown() {
       clearInterval(pollInterval);
       clearInterval(pauseTickInterval);
-      clearInterval(renagTimer);
       clearInterval(heartbeatInterval);
       clearTimeout(autoPingTimer);
       clearTimeout(pauseTimeout);
@@ -498,29 +493,6 @@ export default defineContentScript({
 
     function playSoundForSeverity(sev: Severity) {
       if (soundEnabled) playSound(SEVERITY_SOUND[sev]);
-    }
-
-    // Re-nag: si una notificación con re-insistencia sigue sin leerse tras X min,
-    // vuelve a avisar (sonido + pop-up del sistema). Config: netsus_renag_min.
-    function startRenagLoop() {
-      clearInterval(renagTimer);
-      renagTimer = window.setInterval(async () => {
-        if (!extensionAlive()) { handleContextInvalidated(); return; }
-        try {
-          const [list, renagMin] = await Promise.all([getNotifs(), getRenagMinutes()]);
-          const due = dueForRenag(list, renagMin);
-          for (const n of due) {
-            if (isMuted(typePrefs, n.type)) continue;
-            playSoundForSeverity(n.severity);
-            sendChromeNotification(`🔔 ${n.title}`, n.body); // pop-up del SO: sin soporte SVG, mantiene emoji
-            await bumpNag(n.id);
-          }
-        } catch (err) {
-          // Sin este catch, el await de una promesa de chrome.storage que falla por
-          // contexto muerto se reporta como "Uncaught (in promise)".
-          if (isContextError(err)) handleContextInvalidated();
-        }
-      }, 30000);
     }
 
     // Bloquea la interacción con el ticket durante una colisión. El side panel
@@ -927,15 +899,13 @@ export default defineContentScript({
       pushState();
     }));
 
-    // Heartbeat: marca esta pestaña como "viva" para que el background solo haga el
-    // re-nag de respaldo (OS) cuando no hay ninguna pestaña de Autotask abierta.
-    // Además sirve de detector: es lo primero que falla al recargarse la extensión,
-    // así que apaga el resto de los timers antes de que floodeen la consola.
+    // Heartbeat: marca esta pestaña como "viva". Sirve de detector temprano — es lo
+    // primero que falla al recargarse la extensión (chrome.storage.local.set revienta
+    // por contexto invalidado), así que apaga el resto de los timers antes de que
+    // floodeen la consola.
     const beat = () => safeChrome(() => chrome.storage.local.set({ netsus_cs_heartbeat: Date.now() }));
     beat();
     heartbeatInterval = window.setInterval(beat, 15000);
-
-    startRenagLoop();
 
     setTimeout(loadUserAndInit, 1000);
   },

@@ -1,9 +1,5 @@
 import {
   add as addNotif,
-  getAll as getNotifs,
-  dueForRenag,
-  getRenagMinutes,
-  bumpNag,
   SILENT_TYPES,
   type NotifType,
 } from '@/lib/notifications';
@@ -98,28 +94,6 @@ async function pollNotificationFeed() {
     }
   } catch {
     // silencioso: el próximo ciclo reintenta
-  }
-}
-
-function getHeartbeat(): Promise<number | undefined> {
-  return storageGet<{ netsus_cs_heartbeat: number }>(['netsus_cs_heartbeat']).then(({ netsus_cs_heartbeat }) => netsus_cs_heartbeat);
-}
-
-async function backgroundRenag() {
-  const beat = await getHeartbeat();
-  if (beat && Date.now() - beat < 45000) return;
-  const [list, renagMin, prefs, dnd] = await Promise.all([getNotifs(), getRenagMinutes(), getTypePrefs(), isDnd()]);
-  if (dnd) return;
-  for (const n of dueForRenag(list, renagMin)) {
-    if (isMuted(prefs, n.type)) continue;
-    chrome.notifications.create({
-      type: 'basic',
-      iconUrl: chrome.runtime.getURL('icon/128.png'),
-      title: `🔔 ${n.title}`,
-      message: n.body,
-      priority: 2,
-    });
-    await bumpNag(n.id);
   }
 }
 
@@ -334,10 +308,6 @@ export default defineBackground(() => {
   step('feed de notificaciones', () => {
     setInterval(pollNotificationFeed, 30000);
     pollNotificationFeed();
-  });
-
-  step('re-nag', () => {
-    setInterval(backgroundRenag, 30000);
   });
 
   step('asignaciones', () => {

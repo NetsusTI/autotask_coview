@@ -30,21 +30,27 @@ export interface AppNotification {
   ts: number;
   read: boolean;   // el técnico ya la abrió/leyó
   seen: boolean;   // ya se mostró el "aviso" (toast) — no volver a sonar
-  renag: boolean;  // aplica re-nag si sigue sin leer
-  lastNag: number; // ts del último re-aviso
   dedupeKey?: string;
 }
 
-// Metadatos por tipo: severidad, icono y si re-insiste (re-nag) por defecto.
-export const TYPE_META: Record<NotifType, { severity: Severity; icon: IconName; renag: boolean; label: string }> = {
-  collision:   { severity: 'critical', icon: 'alert-triangle', renag: true,  label: 'Colisión' },
-  ping:        { severity: 'warning',  icon: 'megaphone',      renag: true,  label: 'Aviso de técnico' },
-  liberation:  { severity: 'success',  icon: 'check-circle',   renag: false, label: 'Ticket liberado' },
-  n1_queue:    { severity: 'info',     icon: 'inbox',          renag: false, label: 'Ticket entrante en cola' },
-  n2_assign:   { severity: 'warning',  icon: 'user-plus',      renag: true,  label: 'Asignación de ticket' },
-  n3_client:   { severity: 'warning',  icon: 'message-square', renag: true,  label: 'Respuesta de cliente' },
-  n4_sla:      { severity: 'critical', icon: 'timer',          renag: true,  label: 'SLA comprometido' },
-  n5_critical: { severity: 'critical', icon: 'flame',          renag: true,  label: 'Ticket crítico en cola' },
+// Metadatos por tipo: severidad e icono.
+//
+// Hubo un mecanismo de re-nag acá (repetir sonido + pop-up nativo cada
+// netsus_renag_min mientras algo quedara sin leer) que se sacó del todo a pedido
+// explícito del admin — se sentía como que "salta la notificación cada cierto rato"
+// sin que hubiera forma de ajustarlo desde el panel (esos controles ya se habían
+// sacado de la UI antes, ver entrypoints/sidepanel/index.html). Si hace falta volver
+// a insistir en algo urgente sin leer, mejor una franja horaria de trabajo/hasOpenTab
+// que un timer ciego — no un simple "poner el número de vuelta".
+export const TYPE_META: Record<NotifType, { severity: Severity; icon: IconName; label: string }> = {
+  collision:   { severity: 'critical', icon: 'alert-triangle', label: 'Colisión' },
+  ping:        { severity: 'warning',  icon: 'megaphone',      label: 'Aviso de técnico' },
+  liberation:  { severity: 'success',  icon: 'check-circle',   label: 'Ticket liberado' },
+  n1_queue:    { severity: 'info',     icon: 'inbox',          label: 'Ticket entrante en cola' },
+  n2_assign:   { severity: 'warning',  icon: 'user-plus',      label: 'Asignación de ticket' },
+  n3_client:   { severity: 'warning',  icon: 'message-square', label: 'Respuesta de cliente' },
+  n4_sla:      { severity: 'critical', icon: 'timer',          label: 'SLA comprometido' },
+  n5_critical: { severity: 'critical', icon: 'flame',          label: 'Ticket crítico en cola' },
 };
 
 // Tipos que se avisan SOLO visualmente (toast + badge), nunca con sonido — a pedido
@@ -65,8 +71,6 @@ export const SEVERITY_COLOR: Record<Severity, { base: string; grad: [string, str
 const STORAGE_KEY = 'netsus_notifications';
 const MAX_ITEMS = 60;
 const DEDUPE_WINDOW_MS = 60_000;
-export const RENAG_MIN_KEY = 'netsus_renag_min';
-export const DEFAULT_RENAG_MIN = 3;
 
 function storageGet<T>(key: string): Promise<T | undefined> {
   return new Promise((resolve) => {
@@ -83,13 +87,6 @@ function storageSet(key: string, value: unknown): Promise<void> {
 export async function getAll(): Promise<AppNotification[]> {
   const raw = await storageGet<AppNotification[]>(STORAGE_KEY);
   return Array.isArray(raw) ? raw : [];
-}
-
-export async function getRenagMinutes(): Promise<number> {
-  const raw = await storageGet<string | number>(RENAG_MIN_KEY);
-  const n = typeof raw === 'string' ? parseInt(raw) : raw;
-  if (!n || Number.isNaN(n)) return DEFAULT_RENAG_MIN;
-  return Math.max(1, Math.min(60, n));
 }
 
 export interface NewNotification {
@@ -130,8 +127,6 @@ export async function add(n: NewNotification): Promise<AppNotification | null> {
     ts: now,
     read: false,
     seen: n.silent === true, // silent ⇒ ya "visto": no dispara toast ni sonido
-    renag: meta.renag,
-    lastNag: now,
     dedupeKey,
   };
 
@@ -170,19 +165,8 @@ export async function clearAll(): Promise<void> {
   await storageSet(STORAGE_KEY, []);
 }
 
-export async function bumpNag(id: string): Promise<void> {
-  await mutate((list) => list.map((x) => (x.id === id ? { ...x, lastNag: Date.now() } : x)));
-}
-
 export function unreadCount(list: AppNotification[]): number {
   return list.filter((x) => !x.read).length;
-}
-
-// Notificaciones sin leer que ya deberían re-insistir (re-nag) según X minutos.
-export function dueForRenag(list: AppNotification[], renagMin: number): AppNotification[] {
-  const now = Date.now();
-  const ms = renagMin * 60_000;
-  return list.filter((x) => x.renag && !x.read && now - x.lastNag >= ms);
 }
 
 // Suscripción a cambios del buzón (para mantener campana/bandeja en vivo).

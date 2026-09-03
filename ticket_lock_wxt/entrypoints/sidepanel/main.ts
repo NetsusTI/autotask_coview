@@ -633,9 +633,9 @@ feedbackSubmitEl.addEventListener('click', async () => {
   setTimeout(() => (feedbackStatusEl.textContent = ''), 3000);
 });
 
-// El re-aviso ya no se configura desde el panel: sigue corriendo con su valor por
-// omisión (ver getRenagMinutes() en lib/notifications.ts), y respeta el que ya
-// tuviera guardado un técnico.
+// El re-aviso (re-nag) se sacó del todo — ver TYPE_META en lib/notifications.ts.
+// Cada notificación importante avisa una vez (sonido + pop-up + queda en el panel)
+// y no vuelve a insistir sola aunque siga sin leerse.
 
 function highlightThemeSeg(pref: ThemePref) {
   document.querySelectorAll<HTMLButtonElement>('#themeSeg button').forEach((b) => {

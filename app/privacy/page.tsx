@@ -2,8 +2,15 @@ const H2 = { fontSize: 18, marginTop: 32, marginBottom: 8 } as const;
 const UL = { paddingLeft: 20, lineHeight: 2 } as const;
 
 export default function PrivacyPage() {
+  // Fondo blanco fijo, explícito, sin depender de --background (app/globals.css la
+  // cambia a casi negro con prefers-color-scheme: dark). El texto ya estaba en un
+  // color oscuro (#1a1a2e) pensado para fondo claro — con el body heredando el negro
+  // del modo oscuro del sistema, quedaba texto oscuro sobre fondo oscuro, invisible.
+  // Una política de privacidad se lee igual sin importar el tema del sitio, así que
+  // se fija a blanco siempre en vez de sumarle soporte a dos temas.
   return (
-    <div style={{ fontFamily: 'Segoe UI, sans-serif', maxWidth: 720, margin: '60px auto', padding: '0 24px', color: '#1a1a2e' }}>
+    <div style={{ background: '#fff', minHeight: '100vh' }}>
+    <div style={{ fontFamily: 'Segoe UI, sans-serif', maxWidth: 720, margin: '0 auto', padding: '60px 24px', color: '#1a1a2e' }}>
       <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 8 }}>Política de Privacidad</h1>
       <p style={{ color: '#666', marginBottom: 32 }}>Autotask CoView · Netsus SpA · Última actualización: agosto 2026</p>
 
@@ -95,6 +102,7 @@ export default function PrivacyPage() {
 
       <h2 style={H2}>Contacto</h2>
       <p>Para consultas sobre privacidad: <a href="mailto:soporte@netsus.cl">soporte@netsus.cl</a></p>
+    </div>
     </div>
   );
 }

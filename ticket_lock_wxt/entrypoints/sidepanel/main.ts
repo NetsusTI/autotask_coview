@@ -4,6 +4,7 @@ import {
   subscribe,
   markAllRead,
   markRead,
+  clearAll,
   unreadCount,
   SEVERITY_COLOR,
   type AppNotification,
@@ -341,6 +342,11 @@ notifListEl.addEventListener('click', async (e) => {
 });
 document.getElementById('notif-readall')!.addEventListener('click', async () => {
   await markAllRead();
+  refreshNotifs();
+});
+document.getElementById('notif-clearall')!.addEventListener('click', async () => {
+  if (!confirm('¿Borrar todas las notificaciones? No se puede deshacer.')) return;
+  await clearAll();
   refreshNotifs();
 });
 

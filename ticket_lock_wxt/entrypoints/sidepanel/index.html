@@ -130,6 +130,13 @@
     /* --- Mensajes rápidos --- */
     .quick-msgs { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; margin-bottom: 6px; }
 
+    /* #app no tenía NINGUNA regla propia: como hijo flex de body sin flex-grow, tomaba
+       su altura natural (todo el contenido apilado) en vez de acotarse al viewport.
+       .notif-list ya declaraba flex:1;overflow-y:auto más abajo, pero sin un padre con
+       altura acotada no tenía contra qué hacer scroll — el sobrante quedaba cortado por
+       el overflow:hidden del body, invisible y sin forma de llegar a él. */
+    #app { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+
     /* --- Estado del ticket --- */
     #warnings { flex-shrink: 0; }
     /* Franja de acento a la izquierda sobre fondo neutro del tema, en vez de un
@@ -261,9 +268,14 @@
           <span>Notificaciones</span>
           <span id="notif-count" class="notif-count" style="display:none">0</span>
         </div>
-        <button id="notif-readall" class="ico-btn" title="Marcar todas como leídas">
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/></svg>
-        </button>
+        <div style="display:flex;gap:2px">
+          <button id="notif-readall" class="ico-btn" title="Marcar todas como leídas">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/></svg>
+          </button>
+          <button id="notif-clearall" class="ico-btn" title="Borrar todas">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          </button>
+        </div>
       </div>
       <div id="notif-list" class="notif-list"></div>
     </div>

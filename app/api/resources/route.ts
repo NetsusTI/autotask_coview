@@ -9,7 +9,7 @@ export async function GET(request: NextRequest) {
 
   const { data, error } = await supabase
     .from('resources')
-    .select('autotask_resource_id, name, email, role, active')
+    .select('autotask_resource_id, name, email, role, title, active')
     .order('active', { ascending: false })
     .order('name');
 

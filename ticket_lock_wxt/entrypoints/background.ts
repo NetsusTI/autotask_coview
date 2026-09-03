@@ -4,6 +4,7 @@ import {
   dueForRenag,
   getRenagMinutes,
   bumpNag,
+  SILENT_TYPES,
   type NotifType,
 } from '@/lib/notifications';
 import { getTypePrefs, isMuted } from '@/lib/prefs';
@@ -88,6 +89,11 @@ async function pollNotificationFeed() {
         title: it.title,
         message: it.body,
         priority: 2,
+        // Ver SILENT_TYPES en lib/notifications.ts: n1_queue avisa solo visualmente.
+        // Sin esto, el pop-up nativo del SO seguía sonando con su propio chime aunque
+        // el sonido sintetizado del content script (playSoundForSeverity) ya se
+        // hubiera silenciado — son dos fuentes de sonido independientes.
+        silent: SILENT_TYPES.has(it.type),
       });
     }
   } catch {

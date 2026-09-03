@@ -946,7 +946,10 @@
         : '<span class="roster-badge inactive">Inactivo</span>';
       var btnLabel = r.active ? 'Quitar del roster' : 'Reactivar';
       var btn = '<button class="rosterToggleBtn" data-id="' + r.autotask_resource_id + '" data-next="' + (!r.active) + '" style="font-size:10px;padding:2px 8px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--dim);cursor:pointer">' + btnLabel + '</button>';
-      return '<tr><td>' + escHtml(r.name) + '</td><td>' + escHtml(r.email || '—') + '</td><td>' + escHtml(r.role || '—') + '</td><td>' + badge + '</td><td>' + btn + '</td></tr>';
+      // r.title es el cargo tal cual lo trae Autotask (ej. "Técnico", "Ingeniero de
+      // Soporte") — texto libre, distinto de r.role (que es un valor interno fijo,
+      // 'tech' para todos, no pensado para mostrarse).
+      return '<tr><td>' + escHtml(r.name) + '</td><td>' + escHtml(r.email || '—') + '</td><td>' + escHtml(r.title || '—') + '</td><td>' + badge + '</td><td>' + btn + '</td></tr>';
     }).join('');
     el.innerHTML = '<table class="roster-table"><thead><tr><th>Nombre</th><th>Email</th><th>Cargo</th><th>Estado</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
     Array.prototype.forEach.call(el.querySelectorAll('.rosterToggleBtn'), function (btn) {

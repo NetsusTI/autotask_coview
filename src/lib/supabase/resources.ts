@@ -8,11 +8,14 @@ export async function syncResourcesFromAutotask(): Promise<{ synced: number; dea
   // `role` tiene un CHECK constraint en la tabla real (resources_role_check) que el
   // title libre de Autotask viola — se fija en 'tech', el único valor que usan todas
   // las filas existentes. La columna no se lee en ninguna parte, solo se escribe.
+  // `title` es distinto: sin constraint, texto libre tal cual lo trae Autotask
+  // (ej. "Técnico", "Ingeniero de Soporte") — esa es la que se muestra en el panel.
   const rows = active.map((r) => ({
     autotask_resource_id: r.id,
     name: `${r.firstName} ${r.lastName}`.trim(),
     email: r.email?.trim() || null,
     role: 'tech',
+    title: r.title?.trim() || null,
   }));
 
   // excluded = el admin sacó a esta persona del roster a mano (marketing, comercial,
@@ -39,7 +42,7 @@ export async function syncResourcesFromAutotask(): Promise<{ synced: number; dea
     if (ex?.excluded) continue; // respeta la exclusión manual
     await supabase
       .from('resources')
-      .update({ name: row.name, email: row.email, role: row.role, active: true })
+      .update({ name: row.name, email: row.email, role: row.role, title: row.title, active: true })
       .eq('autotask_resource_id', row.autotask_resource_id);
   }
 

@@ -20,6 +20,13 @@ ALTER TABLE resources ALTER COLUMN created_at SET DEFAULT now();
 -- sacó a mano del roster (marketing, comercial, administración, etc). El sync
 -- respeta esto y no lo reactiva; solo el botón "Reactivar" del panel lo revierte.
 ALTER TABLE resources ADD COLUMN IF NOT EXISTS excluded boolean NOT NULL DEFAULT false;
+-- title: el "Título"/cargo que trae Resources.title de Autotask tal cual (ej.
+-- "Técnico", "Ingeniero de Soporte") — texto libre de cada instancia, sin lista fija.
+-- Va SEPARADO de `role`, que sí tiene un CHECK constraint (resources_role_check)
+-- agregado a mano en el dashboard de Supabase, no reflejado en este archivo — el
+-- texto libre de Autotask lo violaba, por eso role se sigue fijando a 'tech' en el
+-- sync y no se toca acá. `title` es la columna que se muestra en el panel admin.
+ALTER TABLE resources ADD COLUMN IF NOT EXISTS title text;
 DO $$
 BEGIN
   IF NOT EXISTS (

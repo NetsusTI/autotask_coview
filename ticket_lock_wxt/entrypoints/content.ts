@@ -5,6 +5,7 @@ import {
   getRenagMinutes,
   bumpNag,
   subscribe as subscribeNotifs,
+  SILENT_TYPES,
   type Severity,
   type AppNotification,
 } from '@/lib/notifications';
@@ -484,7 +485,7 @@ export default defineContentScript({
       for (const n of fresh) {
         if (isMuted(typePrefs, n.type)) continue;
         showNotifToast(n);
-        playSoundForSeverity(n.severity);
+        if (!SILENT_TYPES.has(n.type)) playSoundForSeverity(n.severity);
       }
     }
 

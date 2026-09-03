@@ -47,6 +47,13 @@ export const TYPE_META: Record<NotifType, { severity: Severity; icon: IconName; 
   n5_critical: { severity: 'critical', icon: 'flame',          renag: true,  label: 'Ticket crítico en cola' },
 };
 
+// Tipos que se avisan SOLO visualmente (toast + badge), nunca con sonido — a pedido
+// explícito del admin: un ticket entrando a la cola es un evento de alto volumen
+// (varios por hora en horario pico) y sonar por cada uno resultaba más ruido que
+// aviso útil. No usa el mecanismo de mute por técnico (TypePrefs/isMuted): es un
+// default del sistema, no algo que cada técnico tenga que apagar por su cuenta.
+export const SILENT_TYPES: Set<NotifType> = new Set(['n1_queue']);
+
 // Paleta por severidad — usada para los colores de notificación (aviso/leída/no leída).
 export const SEVERITY_COLOR: Record<Severity, { base: string; grad: [string, string]; tint: string }> = {
   critical: { base: '#ef4444', grad: ['#991b1b', '#dc2626'], tint: 'rgba(239,68,68,0.12)' },

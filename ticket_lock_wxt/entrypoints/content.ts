@@ -691,7 +691,16 @@ export default defineContentScript({
         ping: lastOthers.map(u => u.name),
       };
       if (quickMsg) body.quickMsg = quickMsg;
-      apiCall('POST', `/api/presence/${presenceId()}`, body, () => {});
+      // El aviso le llega al OTRO técnico (el que está en el ticket) — en la pantalla
+      // de quien hace clic en "Avisar" o en un mensaje rápido no cambia nada por sí
+      // solo. Sin esta confirmación, el botón se sentía roto aunque estuviera
+      // funcionando: se mandaba el aviso, pero nadie se lo decía a quien lo apretó.
+      const targets = lastOthers;
+      apiCall('POST', `/api/presence/${presenceId()}`, body, () => {
+        if (!targets.length) return;
+        const label = quickMsg ? `"${quickMsg}" enviado a ${formatNames(targets)}` : `Se notificó a ${formatNames(targets)}`;
+        sendChromeNotification('Aviso enviado', label);
+      });
       setTimeout(() => { pingCooldown = false; }, 15000);
     }
 

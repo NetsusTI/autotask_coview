@@ -841,6 +841,13 @@ export default defineContentScript({
       if (pid) registerPresence(pid, currentUser);
       pollInterval = window.setInterval(() => {
         if (stopped || !currentUser) return;
+        // Una pestaña en segundo plano (minimizada, tapada por otra, o abierta desde
+        // ayer sin cerrarla) no debe seguir renovando presencia para siempre — eso
+        // dejaba al técnico marcado como "presente" en un ticket que ya no estaba
+        // mirando, generando colisiones fantasma para quien lo abría de verdad. Al
+        // dejar de refrescar, el TTL normal (config:presence_ttl, 40s por defecto) la
+        // libera solo, sin necesitar un DELETE explícito acá.
+        if (document.visibilityState === 'hidden') return;
         const p = presenceId();
         if (p) registerPresence(p, currentUser);
         // Sincronización periódica con el sidepanel: si el panel perdió el NSB_STATE

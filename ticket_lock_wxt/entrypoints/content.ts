@@ -851,9 +851,16 @@ export default defineContentScript({
         const p = presenceId();
         if (p) registerPresence(p, currentUser);
         // Sincronización periódica con el sidepanel: si el panel perdió el NSB_STATE
-        // inicial (race condition de startup), este push lo recupera en ≤5 s.
+        // inicial (race condition de startup), este push lo recupera en ≤20 s.
         pushState();
-      }, 5000);
+        // 20s, no 5s: cada llamada a registerPresence dispara ~10-15 comandos Redis
+        // en el backend (ver POST /api/presence/[id]), multiplicados por cada pestaña
+        // de ticket abierta de cada técnico — es, por lejos, el mayor consumidor de la
+        // cuota de Upstash (causó "max requests limit exceeded" en producción, oct
+        // 2026). El TTL de presencia (config:presence_ttl, 40s por defecto) deja
+        // margen de sobra para refrescar cada 20s sin riesgo real de que expire entre
+        // medio — y sigue siendo, en la práctica, instantáneo para el técnico.
+      }, 20000);
     }
 
     // El side panel pide el estado actual al abrirse o cambiar de pestaña, y

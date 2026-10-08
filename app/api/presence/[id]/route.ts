@@ -11,6 +11,21 @@ import { logError } from '@/lib/error-log';
 
 const PRESENCE_TTL = 40;
 
+// Cache en memoria del proceso para los config:* que este endpoint lee en CADA
+// POST de presencia (el más llamado de todo el backend, cada 20s por pestaña de
+// ticket abierta). Casi nunca cambian, así que vale la pena tolerar hasta 60s de
+// desfase a cambio de ahorrar varios comandos Redis por invocación — se pierde al
+// reciclarse la instancia de la función (normal en serverless), no hay nada que
+// limpiar manualmente.
+const configCache = new Map<string, { value: string | null; expires: number }>();
+async function getCachedConfig(key: string, ttlMs = 60_000): Promise<string | null> {
+  const cached = configCache.get(key);
+  if (cached && cached.expires > Date.now()) return cached.value;
+  const value = await redis.get<string>(key);
+  configCache.set(key, { value, expires: Date.now() + ttlMs });
+  return value;
+}
+
 function presenceKey(ticketId: string, user: string) {
   return `ticketpresence:${ticketId}:${user}`;
 }
@@ -37,17 +52,17 @@ async function getAutotaskAssignee(ticketId: string): Promise<string | null> {
 // nunca lanza, así que un fallo de Autotask no puede romper la respuesta de colisión.
 async function maybeCreateAutotaskNote(numericTicketId: string | null, title: string, description: string) {
   if (!numericTicketId) return;
-  const enabled = await redis.get<string>('config:autotask_notes_enabled');
+  const enabled = await getCachedConfig('config:autotask_notes_enabled');
   if (enabled !== '1') return;
   createTicketNote(Number(numericTicketId), { title, description });
 }
 
 async function getWebhookUrl(): Promise<string | null> {
-  return redis.get<string>('config:teams_webhook');
+  return getCachedConfig('config:teams_webhook');
 }
 
 async function isWithinWorkHours(): Promise<boolean> {
-  const raw = await redis.get<string>('config:work_hours');
+  const raw = await getCachedConfig('config:work_hours');
   if (!raw) return true;
   try {
     const { start = 8, end = 18, tz = 'America/Santiago' } = JSON.parse(raw);
@@ -226,7 +241,7 @@ export async function POST(
     if (status !== null) {
       // Statuses cerrados: por defecto solo 5 (Complete). Configurable en Redis como
       // JSON array: SET config:closed_statuses "[5,8,29]"
-      const closedRaw = await redis.get<string>('config:closed_statuses');
+      const closedRaw = await getCachedConfig('config:closed_statuses');
       const closedStatuses: number[] = closedRaw ? JSON.parse(closedRaw) : [AUTOTASK_STATUS_COMPLETE];
       if (closedStatuses.includes(status)) {
         // Aunque el ticket esté completado (solo lectura), el recurso principal sigue
@@ -241,7 +256,7 @@ export async function POST(
     }
   }
 
-  const configTtl = await redis.get<string>('config:presence_ttl');
+  const configTtl = await getCachedConfig('config:presence_ttl');
   const ttl = clampInt(configTtl, 15, 300, PRESENCE_TTL);
   await redis.set(presenceKey(id, user), '1', { ex: ttl });
   // Refresca el score en cada poll — así el índice sabe que este ticket sigue

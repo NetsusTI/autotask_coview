@@ -29,19 +29,27 @@ export async function GET(request: NextRequest) {
   const liveTicketIds = Object.keys(ticketMap);
   if (!liveTicketIds.length) return NextResponse.json([]);
 
-  const [numbers, urls] = await Promise.all([
-    Promise.all(liveTicketIds.map(id => redis.get<string>(`ticketnumber:${id}`))),
-    Promise.all(liveTicketIds.map(id => redis.get<string>(`ticketurl:${id}`))),
+  // mget en vez de un GET por ticket/usuario (antes: Promise.all de redis.get
+  // individuales) — mismo resultado, pero son 3 comandos Redis en total para todo
+  // el panel en vez de 2 + 1 por técnico por ticket. Este endpoint lo pollean el
+  // panel admin, el side panel y el background de cada técnico cada 10-20s, así
+  // que el ahorro escala con el tamaño del equipo.
+  const entryKeys = liveTicketIds.flatMap((id) => ticketMap[id].map((name) => `ticketentry:${id}:${name}`));
+  const [numbers, urls, entries] = await Promise.all([
+    redis.mget<(string | null)[]>(...liveTicketIds.map((id) => `ticketnumber:${id}`)),
+    redis.mget<(string | null)[]>(...liveTicketIds.map((id) => `ticketurl:${id}`)),
+    entryKeys.length ? redis.mget<(string | null)[]>(...entryKeys) : Promise.resolve([]),
   ]);
 
-  const result = await Promise.all(liveTicketIds.map(async (id, i) => {
-    const users = await Promise.all(ticketMap[id].map(async (name) => {
-      const ts = await redis.get<string>(`ticketentry:${id}:${name}`);
+  let entryCursor = 0;
+  const result = liveTicketIds.map((id, i) => {
+    const users = ticketMap[id].map((name) => {
+      const ts = entries[entryCursor++];
       const minutes = ts ? Math.floor((Date.now() - parseInt(ts)) / 60000) : 0;
       return { name, minutes };
-    }));
+    });
     return { ticketId: id, ticketNumber: numbers[i] ?? null, ticketUrl: urls[i] ?? null, users };
-  }));
+  });
 
   return NextResponse.json(result);
 }

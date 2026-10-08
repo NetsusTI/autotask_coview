@@ -6,6 +6,7 @@ export interface HistoryEventLike {
   ts: number;
   ticketId: string;
   ticketNumber: string | null;
+  ticketUrl?: string | null;
   users: string[];
 }
 

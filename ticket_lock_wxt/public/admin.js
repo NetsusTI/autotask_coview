@@ -659,8 +659,11 @@
       return;
     }
     var cards = history.map(function (e) {
+      var ticketPart = e.ticketUrl
+        ? '<a href="' + escHtml(e.ticketUrl) + '" target="_blank" class="ticketLink">' + escHtml(e.ticketNumber || '#' + e.ticketId) + '</a>'
+        : escHtml(e.ticketNumber || '#' + e.ticketId);
       return '<div class="histCard"><div class="histLeft">' + ic('alert-triangle', 16) +
-        '<div><div class="histTicket">' + escHtml(e.ticketNumber || '#' + e.ticketId) + '</div>' +
+        '<div><div class="histTicket">' + ticketPart + '</div>' +
         '<div class="histTime">' + new Date(e.ts).toLocaleString('es-CL') + '</div></div></div>' +
         '<div style="display:flex;align-items:center;gap:8px">' +
         '<div class="chips">' + e.users.map(function (u, i) {

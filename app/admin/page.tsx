@@ -10,6 +10,7 @@ const montserrat = Montserrat({ subsets: ['latin'], weight: ['300', '400', '600'
 interface TicketPresence {
   ticketId: string;
   ticketNumber: string | null;
+  ticketUrl?: string | null;
   users: string[];
 }
 
@@ -17,6 +18,7 @@ interface CollisionEvent {
   ts: number;
   ticketId: string;
   ticketNumber: string | null;
+  ticketUrl?: string | null;
   users: string[];
 }
 
@@ -677,13 +679,19 @@ export default function AdminPage() {
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {tickets.map(({ ticketId, ticketNumber, users }) => (
-                <div key={ticketId} style={{
-                  background: p.cardBg,
-                  border: `1px solid ${users.length > 1 ? p.accentBorder : p.cardBorder}`,
-                  borderRadius: 16, padding: '18px 24px',
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                }}>
+              {tickets.map(({ ticketId, ticketNumber, ticketUrl, users }) => (
+                <div
+                  key={ticketId}
+                  onClick={() => { if (ticketUrl) window.open(ticketUrl, '_blank', 'noopener,noreferrer'); }}
+                  title={ticketUrl ? 'Abrir ticket en Autotask' : undefined}
+                  style={{
+                    background: p.cardBg,
+                    border: `1px solid ${users.length > 1 ? p.accentBorder : p.cardBorder}`,
+                    borderRadius: 16, padding: '18px 24px',
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    cursor: ticketUrl ? 'pointer' : 'default',
+                  }}
+                >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
                     <div style={{
                       width: 42, height: 42, borderRadius: 12,
@@ -724,11 +732,17 @@ export default function AdminPage() {
                     {history.length === 0 ? 'Sin colisiones registradas aún' : 'Sin resultados — prueba cambiando los filtros'}
                   </div>
                 ) : filteredHistory.map((e, i) => (
-                  <div key={i} style={{
-                    background: p.chipBg2, border: `1px solid ${p.headerBorder}`,
-                    borderRadius: 12, padding: '14px 20px',
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
-                  }}>
+                  <div
+                    key={i}
+                    onClick={() => { if (e.ticketUrl) window.open(e.ticketUrl, '_blank', 'noopener,noreferrer'); }}
+                    title={e.ticketUrl ? 'Abrir ticket en Autotask' : undefined}
+                    style={{
+                      background: p.chipBg2, border: `1px solid ${p.headerBorder}`,
+                      borderRadius: 12, padding: '14px 20px',
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+                      cursor: e.ticketUrl ? 'pointer' : 'default',
+                    }}
+                  >
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                       <span style={{ color: '#ef4444', display: 'flex' }}><Icon name="alert-triangle" size={16} /></span>
                       <div>

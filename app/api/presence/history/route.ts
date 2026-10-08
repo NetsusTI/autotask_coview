@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
   if (!tech) {
     const { data, count, error } = await supabase
       .from('collision_history')
-      .select('id, ticket_id, ticket_number, users, created_at', { count: 'exact' })
+      .select('id, ticket_id, ticket_number, ticket_url, users, created_at', { count: 'exact' })
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
     if (error || !data) return NextResponse.json({ events: [], total: 0, offset, limit });
@@ -27,6 +27,7 @@ export async function GET(request: NextRequest) {
       ts: new Date(row.created_at).getTime(),
       ticketId: row.ticket_id,
       ticketNumber: row.ticket_number,
+      ticketUrl: row.ticket_url,
       users: row.users ?? [],
     }));
     return NextResponse.json({ events, total: count ?? events.length, offset, limit });
@@ -34,7 +35,7 @@ export async function GET(request: NextRequest) {
 
   const { data, error } = await supabase
     .from('collision_history')
-    .select('id, ticket_id, ticket_number, users, created_at')
+    .select('id, ticket_id, ticket_number, ticket_url, users, created_at')
     .order('created_at', { ascending: false })
     .limit(SCAN_WINDOW);
   if (error || !data) return NextResponse.json({ events: [], total: 0, offset, limit });
@@ -44,6 +45,7 @@ export async function GET(request: NextRequest) {
     ts: new Date(row.created_at).getTime(),
     ticketId: row.ticket_id,
     ticketNumber: row.ticket_number,
+    ticketUrl: row.ticket_url,
     users: row.users ?? [],
   }));
   const filtered = all.filter((e) => e.users.some((u: string) => u?.toLowerCase().includes(tech)));

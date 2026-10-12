@@ -33,6 +33,17 @@ export default defineConfig({
         gecko: {
           id: 'coview@netsus.cl',
           strict_min_version: '109.0',
+          // Exigido por AMO desde nov-2025 para envíos nuevos. Mismo criterio que ya
+          // está publicado en /privacy: nombre del técnico (personallyIdentifyingInfo)
+          // y número/título/URL del ticket (websiteContent, acotado — no se registra
+          // contenido del ticket más allá de eso) son imprescindibles para que la
+          // extensión funcione, así que van en "required". La duración de cada
+          // coincidencia (technicalAndInteraction) solo puede declararse como
+          // "optional" — Mozilla no permite listarla en "required".
+          data_collection_permissions: {
+            required: ['personallyIdentifyingInfo', 'websiteContent'],
+            optional: ['technicalAndInteraction'],
+          },
         },
       },
     } : {}),

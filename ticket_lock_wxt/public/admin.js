@@ -298,7 +298,7 @@
     countdownInterval = setInterval(updateCountdown, 1000);
     tickLiveClock();
     setInterval(tickLiveClock, 1000);
-    setInterval(fetchTeamOnline, 10000);
+    setInterval(fetchTeamOnline, 30000);
     // Fuerza el chequeo de colas al abrir el panel y luego cada 10 min — así el
     // admin ve tickets nuevos aunque ningún técnico tenga la extensión abierta.
     triggerNotifPoll();

@@ -301,7 +301,7 @@ export default defineBackground(() => {
   });
 
   step('badge', () => {
-    setInterval(updateBadge, 20000);
+    setInterval(updateBadge, 45000);
     updateBadge();
   });
 

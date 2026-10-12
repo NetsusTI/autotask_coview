@@ -26,6 +26,24 @@ async function getCachedConfig(key: string, ttlMs = 60_000): Promise<string | nu
   return value;
 }
 
+// KEYS[1] presenceKey · KEYS[2] ACTIVE_TICKETS_KEY (zset) · KEYS[3] ticketentry ·
+// KEYS[4] ticketnumber · KEYS[5] tickettitle · KEYS[6] ticketurl · KEYS[7] autotaskid
+// ARGV[1] ttl · ARGV[2] now (ms) · ARGV[3] ticketId (member del zadd) · ARGV[4..7]
+// ticketNumber/ticketTitle/ticketUrl/autotaskTicketId, o '' si no vinieron — un string
+// vacío nunca es un valor real válido para ninguno de estos campos, así que sirve como
+// "no seteado" sin ambigüedad.
+const REGISTER_PRESENCE_SCRIPT = `
+redis.call('SET', KEYS[1], '1', 'EX', tonumber(ARGV[1]))
+redis.call('ZADD', KEYS[2], ARGV[2], ARGV[3])
+redis.call('SET', KEYS[3], ARGV[2], 'EX', 300, 'NX')
+redis.call('EXPIRE', KEYS[3], 300)
+if ARGV[4] ~= '' then redis.call('SET', KEYS[4], ARGV[4], 'EX', 300) end
+if ARGV[5] ~= '' then redis.call('SET', KEYS[5], ARGV[5], 'EX', 300) end
+if ARGV[6] ~= '' then redis.call('SET', KEYS[6], ARGV[6], 'EX', 300, 'NX') end
+if ARGV[7] ~= '' then redis.call('SET', KEYS[7], ARGV[7], 'EX', 300) end
+return 1
+`;
+
 function presenceKey(ticketId: string, user: string) {
   return `ticketpresence:${ticketId}:${user}`;
 }
@@ -34,9 +52,11 @@ function extractUser(key: string, ticketId: string) {
   return key.replace(`ticketpresence:${ticketId}:`, '');
 }
 
-async function getAutotaskAssignee(ticketId: string): Promise<string | null> {
+// cachedValue: cuando ya se leyó `ticketassigned:{ticketId}` en el mget de más arriba
+// (el caso normal, en el hot path de POST), se pasa acá para no repetir el GET.
+async function getAutotaskAssignee(ticketId: string, cachedValue?: string | null): Promise<string | null> {
   const cacheKey = `ticketassigned:${ticketId}`;
-  const cached = await redis.get<string>(cacheKey);
+  const cached = cachedValue !== undefined ? cachedValue : await redis.get<string>(cacheKey);
   if (cached !== null) return cached === '' ? null : cached;
 
   const resourceId = await getTicketAssignedResourceId(ticketId);
@@ -258,22 +278,33 @@ export async function POST(
 
   const configTtl = await getCachedConfig('config:presence_ttl');
   const ttl = clampInt(configTtl, 15, 300, PRESENCE_TTL);
-  await redis.set(presenceKey(id, user), '1', { ex: ttl });
-  // Refresca el score en cada poll — así el índice sabe que este ticket sigue
-  // "vivo" sin depender de que nunca se llame DELETE (ej. el técnico cierra la
-  // pestaña sin liberar).
-  await redis.zadd(ACTIVE_TICKETS_KEY, { score: Date.now(), member: id });
-  // nx: solo se fija la primera vez (conserva el momento real de llegada). El expire
-  // aparte renueva el TTL en cada poll para que no venza a los 5 min y "reinicie" el
-  // conteo de "quién llegó primero" en colisiones más largas que eso.
-  await redis.set(`ticketentry:${id}:${user}`, Date.now().toString(), { ex: 300, nx: true });
-  await redis.expire(`ticketentry:${id}:${user}`, 300);
-  if (ticketNumber) await redis.set(`ticketnumber:${id}`, ticketNumber, { ex: 300 });
-  if (ticketTitle) await redis.set(`tickettitle:${id}`, ticketTitle, { ex: 300 });
-  if (ticketUrl) await redis.set(`ticketurl:${id}`, ticketUrl, { ex: 300, nx: true });
-  // Cacheado para que el DELETE (que no recibe autotaskTicketId) pueda crear la
-  // nota de resolución en el ticket numérico correcto.
-  if (autotaskTicketId) await redis.set(`autotaskid:${id}`, String(autotaskTicketId), { ex: 300 });
+  // Las 8 escrituras de abajo (antes 8 comandos Redis separados, el grueso del costo
+  // de este endpoint — el más llamado de todo el backend) corren SIEMPRE en cada poll,
+  // así que se colapsan en un solo EVAL. Upstash cobra por comando ejecutado, no por
+  // round-trip: Promise.all/pipeline no ahorraba nada acá, un script sí porque Redis lo
+  // ve como una sola llamada. Mismo comportamiento exacto que antes (mismos NX/EX),
+  // solo que atómico y en 1 comando en vez de 8.
+  await redis.eval(
+    REGISTER_PRESENCE_SCRIPT,
+    [
+      presenceKey(id, user),
+      ACTIVE_TICKETS_KEY,
+      `ticketentry:${id}:${user}`,
+      `ticketnumber:${id}`,
+      `tickettitle:${id}`,
+      `ticketurl:${id}`,
+      `autotaskid:${id}`,
+    ],
+    [
+      String(ttl),
+      String(Date.now()),
+      id,
+      ticketNumber ?? '',
+      ticketTitle ?? '',
+      ticketUrl ?? '',
+      autotaskTicketId ? String(autotaskTicketId) : '',
+    ],
+  );
 
   // Mismo criterio que `user`: los targets de ping son nombres de otros técnicos
   // que también terminan en keys de Redis y en el body de la notificación.
@@ -308,21 +339,28 @@ export async function POST(
     }
   }
 
+  // Se juntan acá 4 lecturas que antes eran 4 comandos Redis separados (2 de ellas ya
+  // venían fusionadas): ping/quickmsg propios, el asignado cacheado de Autotask, y el
+  // contador histórico de colisiones — todas de solo lectura, ninguna depende del
+  // resultado de otra, así que entran en el mismo mget.
   const pingKey = `ping:${id}:${user}`;
-  const [pingedBy, quickMsgReceived] = await Promise.all([
-    redis.get<string>(pingKey),
-    redis.get<string>(`quickmsg:${id}:${user}`),
-  ]);
+  const quickMsgKey = `quickmsg:${id}:${user}`;
+  const assignedTicketId = autotaskTicketId ? String(autotaskTicketId) : id;
+  const assignedKey = `ticketassigned:${assignedTicketId}`;
+  const colcountKey = `colcount:${id}`;
+  const [pingedBy, quickMsgReceived, cachedAssignee, pastCollisionsRaw] = await redis.mget<
+    [string | null, string | null, string | null, number | null]
+  >(pingKey, quickMsgKey, assignedKey, colcountKey);
   if (pingedBy) {
     await redis.del(pingKey);
-    if (quickMsgReceived) await redis.del(`quickmsg:${id}:${user}`);
+    if (quickMsgReceived) await redis.del(quickMsgKey);
   }
 
   const allKeys = await redis.keys(`ticketpresence:${id}:*`);
   const otherNames = dedupeOthers(allKeys.map(k => extractUser(k, id)), user);
 
   const entryTimes = otherNames.length > 0
-    ? await Promise.all(otherNames.map(u => redis.get<string>(`ticketentry:${id}:${u}`)))
+    ? await redis.mget<(string | null)[]>(...otherNames.map(u => `ticketentry:${id}:${u}`))
     : [];
 
   const now = Date.now();
@@ -408,9 +446,8 @@ export async function POST(
     }
   }
 
-  const [assignedTo, pastCollisionsRaw, statusLabel] = await Promise.all([
-    getAutotaskAssignee(autotaskTicketId ? String(autotaskTicketId) : id),
-    redis.get<number>(`colcount:${id}`),
+  const [assignedTo, statusLabel] = await Promise.all([
+    getAutotaskAssignee(assignedTicketId, cachedAssignee),
     autotaskTicketId ? getTicketStatusLabel(String(autotaskTicketId)) : Promise.resolve(null),
   ]);
   const pastCollisions = pastCollisionsRaw ?? 0;

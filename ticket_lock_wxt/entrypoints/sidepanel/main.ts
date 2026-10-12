@@ -536,7 +536,7 @@ async function refreshActiveTechs() {
   }).join('');
 }
 refreshActiveTechs();
-setInterval(refreshActiveTechs, 20000);
+setInterval(refreshActiveTechs, 30000);
 
 // --- Historial reciente de colisiones ---
 async function loadRecentHistory(user: string) {

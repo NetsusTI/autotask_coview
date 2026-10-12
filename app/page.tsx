@@ -50,55 +50,66 @@ export default function Home() {
 
   return (
     <div className={montserrat.className} style={{ background: PAGE_BG, color: TEXT, minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-      {/* Header */}
-      <div style={{ borderBottom: `1px solid ${CARD_BORDER}`, background: 'rgba(255,255,255,0.03)', backdropFilter: 'blur(10px)', position: 'sticky', top: 0, zIndex: 10 }}>
-        <Section style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 72 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <img src="/netsus-logo.png" alt="netsus" style={{ height: 22 }} />
-            <div style={{ width: 1, height: 28, background: CARD_BORDER }} />
-            <div>
-              <div style={{ fontSize: 15, fontWeight: 800 }}>Autotask CoView</div>
-              <div style={{ fontSize: 11, color: DIM, marginTop: -2 }}>Netsus · Innovación Tecnológica</div>
+      {/* Hero: panel partido estilo pantalla de login — marca a la izquierda, acceso a la derecha */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', minHeight: '100vh' }}>
+        <div style={{
+          flex: '1 1 480px', minHeight: 480, position: 'relative', overflow: 'hidden',
+          background: PAGE_BG, padding: '36px 44px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
+        }}>
+          {/* patrón decorativo de cuadrícula, puramente visual */}
+          <div style={{
+            position: 'absolute', inset: 0, opacity: 0.5, pointerEvents: 'none',
+            backgroundImage: 'radial-gradient(rgba(255,255,255,0.08) 1.5px, transparent 1.5px)',
+            backgroundSize: '26px 26px',
+            maskImage: 'radial-gradient(circle at 30% 70%, #000 0%, transparent 65%)',
+            WebkitMaskImage: 'radial-gradient(circle at 30% 70%, #000 0%, transparent 65%)',
+          }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, position: 'relative' }}>
+            <img src="/netsus-logo.png" alt="netsus" style={{ height: 20 }} />
+          </div>
+          <div style={{ position: 'relative', maxWidth: 440 }}>
+            <h1 style={{ fontSize: 34, fontWeight: 800, lineHeight: 1.25, margin: '0 0 16px' }}>
+              Evita que dos técnicos trabajen el mismo ticket sin saberlo
+            </h1>
+            <p style={{ fontSize: 14, color: DIM, lineHeight: 1.7, margin: 0 }}>
+              Autotask CoView avisa en tiempo real cuando dos técnicos abren el mismo ticket a la vez —
+              para que nunca más se dupliquen notas, ni el cliente reciba dos respuestas distintas.
+            </p>
+          </div>
+        </div>
+
+        <div style={{
+          flex: '1 1 360px', minHeight: 480, background: 'rgba(255,255,255,0.05)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '44px 32px',
+        }}>
+          <div style={{ maxWidth: 300, textAlign: 'center' }}>
+            <div style={{
+              width: 44, height: 44, borderRadius: 12, background: 'rgba(56,103,233,0.15)', color: ACCENT,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px',
+            }}>
+              <Icon name="satellite" size={21} />
+            </div>
+            <div style={{ fontSize: 19, fontWeight: 800, marginBottom: 8 }}>Acceder al panel</div>
+            <div style={{ fontSize: 13, color: DIM, marginBottom: 28, lineHeight: 1.6 }}>
+              Panel de administración de Autotask CoView — uso interno del equipo de soporte.
+            </div>
+            <a
+              href="/admin"
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, width: '100%',
+                padding: '13px 20px', borderRadius: 10, boxSizing: 'border-box',
+                background: ACCENT, color: '#fff', fontSize: 14, fontWeight: 600, textDecoration: 'none',
+                boxShadow: '0 8px 24px rgba(56,103,233,0.35)',
+              }}
+            >
+              Login <Icon name="link-2" size={15} />
+            </a>
+            <div style={{ fontSize: 11, color: FAINT, marginTop: 20 }}>
+              Solo uso interno · Equipo de soporte Netsus
             </div>
           </div>
-          <a
-            href="/admin"
-            style={{
-              display: 'flex', alignItems: 'center', gap: 8, padding: '10px 20px', borderRadius: 10,
-              background: ACCENT, color: '#fff', fontSize: 13, fontWeight: 600, textDecoration: 'none',
-            }}
-          >
-            Login <Icon name="link-2" size={14} />
-          </a>
-        </Section>
-      </div>
-
-      {/* Hero */}
-      <Section style={{ paddingTop: 96, paddingBottom: 64, textAlign: 'center' }}>
-        <div style={{
-          display: 'inline-flex', alignItems: 'center', gap: 8, padding: '6px 14px', borderRadius: 20,
-          background: 'rgba(56,103,233,0.15)', color: ACCENT, fontSize: 12, fontWeight: 600, marginBottom: 24,
-        }}>
-          <Icon name="satellite" size={13} /> Uso interno · Netsus
         </div>
-        <h1 style={{ fontSize: 42, fontWeight: 800, lineHeight: 1.15, margin: '0 0 20px', maxWidth: 720, marginLeft: 'auto', marginRight: 'auto' }}>
-          Evita que dos técnicos trabajen el mismo ticket sin saberlo
-        </h1>
-        <p style={{ fontSize: 16, color: DIM, maxWidth: 560, margin: '0 auto 36px', lineHeight: 1.7 }}>
-          Autotask CoView avisa en tiempo real cuando dos técnicos abren el mismo ticket a la vez —
-          para que nunca más se dupliquen notas, ni el cliente reciba dos respuestas distintas.
-        </p>
-        <a
-          href="/admin"
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 10, padding: '14px 32px', borderRadius: 12,
-            background: ACCENT, color: '#fff', fontSize: 15, fontWeight: 600, textDecoration: 'none',
-            boxShadow: '0 8px 24px rgba(56,103,233,0.35)',
-          }}
-        >
-          Ir al panel de administración <Icon name="link-2" size={16} />
-        </a>
-      </Section>
+      </div>
 
       {/* Value props */}
       <Section style={{ paddingBottom: 72 }}>

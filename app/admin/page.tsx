@@ -495,20 +495,52 @@ export default function AdminPage() {
   const p = PALETTE[resolved];
 
   if (!auth) {
+    // Mismo panel partido que la landing en "/" (marca a la izquierda, acceso a la
+    // derecha) — el panel izquierdo queda fijo en el tema oscuro de marca (como un
+    // afiche, no cambia con el ThemeToggle); solo el formulario de la derecha respeta
+    // el tema elegido.
     return (
       <div className={montserrat.className} style={{
-        minHeight: '100vh', display: 'flex', flexDirection: 'column',
+        minHeight: '100vh', display: 'flex', flexWrap: 'wrap',
         background: p.pageBg, color: p.text, fontWeight: 400, position: 'relative',
       }}>
-        <div style={{ position: 'absolute', top: 20, right: 20 }}>
+        <div style={{ position: 'absolute', top: 20, right: 20, zIndex: 2 }}>
           <ThemeToggle pref={themePref} onChange={changeTheme} />
         </div>
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+
+        <div style={{
+          flex: '1 1 480px', minHeight: 420, position: 'relative', overflow: 'hidden',
+          background: 'linear-gradient(135deg, #190637 0%, #0d0320 100%)',
+          padding: '36px 44px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
+          boxSizing: 'border-box',
+        }}>
           <div style={{
-            background: p.cardBg, border: `1px solid ${p.cardBorder}`,
-            borderRadius: 20, padding: '40px 36px', width: 320, textAlign: 'center',
-          }}>
-            <img src="/netsus-logo.png" alt="netsus" style={{ height: 28, margin: '0 auto 24px', display: 'block' }} />
+            position: 'absolute', inset: 0, opacity: 0.5, pointerEvents: 'none',
+            backgroundImage: 'radial-gradient(rgba(255,255,255,0.08) 1.5px, transparent 1.5px)',
+            backgroundSize: '26px 26px',
+            maskImage: 'radial-gradient(circle at 30% 70%, #000 0%, transparent 65%)',
+            WebkitMaskImage: 'radial-gradient(circle at 30% 70%, #000 0%, transparent 65%)',
+          }} />
+          <div style={{ position: 'relative' }}>
+            <img src="/netsus-logo.png" alt="netsus" style={{ height: 20 }} />
+          </div>
+          <div style={{ position: 'relative', maxWidth: 440 }}>
+            <div style={{ fontSize: 28, fontWeight: 800, lineHeight: 1.25, marginBottom: 14, color: '#fff' }}>
+              Evita que dos técnicos trabajen el mismo ticket sin saberlo
+            </div>
+            <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.6)', lineHeight: 1.7 }}>
+              Autotask CoView avisa en tiempo real cuando dos técnicos abren el mismo ticket a la vez
+              — para que nunca más se dupliquen notas, ni el cliente reciba dos respuestas distintas.
+            </div>
+          </div>
+        </div>
+
+        <div style={{
+          flex: '1 1 360px', minHeight: 420, background: p.cardBg,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '44px 32px',
+          boxSizing: 'border-box',
+        }}>
+          <div style={{ width: '100%', maxWidth: 280, textAlign: 'center' }}>
             <div style={{ fontSize: 16, fontWeight: 800, color: p.text, marginBottom: 4 }}>Panel de Administración</div>
             <div style={{ fontSize: 12, color: p.dim, marginBottom: 28 }}>Autotask CoView · Netsus</div>
             <input

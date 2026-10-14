@@ -7,16 +7,38 @@ import { checkApiKey, redis, ACTIVE_TICKETS_KEY } from '@/lib/ticket-lock';
 // real por un score levemente desactualizado.
 const INDEX_WINDOW_MS = 15 * 60 * 1000;
 
+// La respuesta es la MISMA para todos los que la piden (la foto global de quién está
+// en qué ticket), y la piden el badge, el side panel y el panel admin de CADA técnico
+// varias veces por minuto. Cada cálculo cuesta 1 + 1 KEYS por ticket tocado en los
+// últimos 15 min + 3 MGET — con el equipo completo eso era el mayor consumidor de la
+// cuota de Redis, y crecía con el cuadrado del tamaño del equipo. Se calcula como
+// mucho una vez cada 15s por instancia y todos reciben esa misma foto; los pedidos que
+// llegan mientras se está calculando esperan el mismo resultado en vez de repetirlo.
+// 15s de desfase es irrelevante acá: la presencia misma vive 40s.
+const CACHE_MS = 15_000;
+type StatusRow = { ticketId: string; ticketNumber: string | null; ticketUrl: string | null; users: { name: string; minutes: number }[] };
+let cached: { at: number; data: StatusRow[] } | null = null;
+let inFlight: Promise<StatusRow[]> | null = null;
+
 export async function GET(request: NextRequest) {
   if (!checkApiKey(request)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  if (cached && Date.now() - cached.at < CACHE_MS) return NextResponse.json(cached.data);
+  if (!inFlight) {
+    inFlight = computeStatus()
+      .then((data) => { cached = { at: Date.now(), data }; return data; })
+      .finally(() => { inFlight = null; });
+  }
+  return NextResponse.json(await inFlight);
+}
 
+async function computeStatus(): Promise<StatusRow[]> {
   const now = Date.now();
   // Antes: redis.keys('ticketpresence:*') — un escaneo O(N) de TODO el keyspace
   // de Redis (no solo las keys de presencia), llamado cada 10s por cada panel
   // admin abierto. Con el índice, solo se hace KEYS acotado por ticket para los
   // tickets que efectivamente tuvieron actividad reciente.
   const ticketIds = await redis.zrange<string[]>(ACTIVE_TICKETS_KEY, now - INDEX_WINDOW_MS, '+inf', { byScore: true });
-  if (!ticketIds.length) return NextResponse.json([]);
+  if (!ticketIds.length) return [];
 
   const perTicketKeys = await Promise.all(ticketIds.map((id) => redis.keys(`ticketpresence:${id}:*`)));
   const ticketMap: Record<string, string[]> = {};
@@ -27,7 +49,7 @@ export async function GET(request: NextRequest) {
   });
 
   const liveTicketIds = Object.keys(ticketMap);
-  if (!liveTicketIds.length) return NextResponse.json([]);
+  if (!liveTicketIds.length) return [];
 
   // mget en vez de un GET por ticket/usuario (antes: Promise.all de redis.get
   // individuales) — mismo resultado, pero son 3 comandos Redis en total para todo
@@ -42,14 +64,12 @@ export async function GET(request: NextRequest) {
   ]);
 
   let entryCursor = 0;
-  const result = liveTicketIds.map((id, i) => {
+  return liveTicketIds.map((id, i) => {
     const users = ticketMap[id].map((name) => {
       const ts = entries[entryCursor++];
-      const minutes = ts ? Math.floor((Date.now() - parseInt(ts)) / 60000) : 0;
+      const minutes = ts ? Math.floor((Date.now() - parseInt(String(ts))) / 60000) : 0;
       return { name, minutes };
     });
-    return { ticketId: id, ticketNumber: numbers[i] ?? null, ticketUrl: urls[i] ?? null, users };
+    return { ticketId: id, ticketNumber: numbers[i] != null ? String(numbers[i]) : null, ticketUrl: urls[i] ?? null, users };
   });
-
-  return NextResponse.json(result);
 }

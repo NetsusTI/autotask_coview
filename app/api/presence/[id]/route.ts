@@ -26,13 +26,31 @@ async function getCachedConfig(key: string, ttlMs = 60_000): Promise<string | nu
   return value;
 }
 
-// KEYS[1] presenceKey · KEYS[2] ACTIVE_TICKETS_KEY (zset) · KEYS[3] ticketentry ·
-// KEYS[4] ticketnumber · KEYS[5] tickettitle · KEYS[6] ticketurl · KEYS[7] autotaskid
-// ARGV[1] ttl · ARGV[2] now (ms) · ARGV[3] ticketId (member del zadd) · ARGV[4..7]
-// ticketNumber/ticketTitle/ticketUrl/autotaskTicketId, o '' si no vinieron — un string
-// vacío nunca es un valor real válido para ninguno de estos campos, así que sirve como
-// "no seteado" sin ambigüedad.
-const REGISTER_PRESENCE_SCRIPT = `
+// TODO el poll de presencia (el endpoint más llamado del backend) en UN solo EVAL:
+// Upstash factura el EVAL como un comando, no cada redis.call de adentro. Antes eran
+// EVAL + MGET + KEYS (y antes de eso, ~13 comandos sueltos).
+//
+// KEYS[1] presenceKey · KEYS[2] ACTIVE_TICKETS_KEY (zset) · KEYS[3] ticketentry propio ·
+// KEYS[4] ticketnumber · KEYS[5] tickettitle · KEYS[6] ticketurl · KEYS[7] autotaskid ·
+// KEYS[8] ping propio · KEYS[9] quickmsg propio · KEYS[10] ticketassigned ·
+// KEYS[11] colcount · KEYS[12] ticketstatus
+// ARGV[1] ttl · ARGV[2] now (ms) · ARGV[3] ticketId · ARGV[4..7] ticketNumber/
+// ticketTitle/ticketUrl/autotaskTicketId ('' = no vino; nunca es un valor real válido) ·
+// ARGV[8] statuses cerrados como ",5,8," (para buscar ",<status>," sin ambigüedad)
+//
+// Respuesta: {'closed', status, asignado} si el status cacheado es de ticket cerrado
+// (no registra presencia, igual que antes), o bien
+// {'ok', status, asignado, colcount, ping, quickmsg, user1, entrada1, user2, ...}.
+// false = nil (en Lua un nil cortaría la tabla; false llega como null sin cortarla).
+//
+// Las keys de los otros técnicos se arman adentro (no están en KEYS): Upstash lo
+// permite mientras el script no use el flag allow-key-locking.
+const PRESENCE_POLL_SCRIPT = `
+local status = redis.call('GET', KEYS[12])
+local assigned = redis.call('GET', KEYS[10])
+if status and status ~= '' and string.find(ARGV[8], ',' .. status .. ',', 1, true) then
+  return {'closed', status, assigned or false}
+end
 redis.call('SET', KEYS[1], '1', 'EX', tonumber(ARGV[1]))
 redis.call('ZADD', KEYS[2], ARGV[2], ARGV[3])
 redis.call('SET', KEYS[3], ARGV[2], 'EX', 300, 'NX')
@@ -41,8 +59,26 @@ if ARGV[4] ~= '' then redis.call('SET', KEYS[4], ARGV[4], 'EX', 300) end
 if ARGV[5] ~= '' then redis.call('SET', KEYS[5], ARGV[5], 'EX', 300) end
 if ARGV[6] ~= '' then redis.call('SET', KEYS[6], ARGV[6], 'EX', 300, 'NX') end
 if ARGV[7] ~= '' then redis.call('SET', KEYS[7], ARGV[7], 'EX', 300) end
-return 1
+local ping = redis.call('GET', KEYS[8])
+local qmsg = redis.call('GET', KEYS[9])
+if ping then
+  redis.call('DEL', KEYS[8])
+  if qmsg then redis.call('DEL', KEYS[9]) end
+end
+local out = {'ok', status or false, assigned or false, redis.call('GET', KEYS[11]) or false, ping or false, qmsg or false}
+local prefix = 'ticketpresence:' .. ARGV[3] .. ':'
+for _, k in ipairs(redis.call('KEYS', prefix .. '*')) do
+  local u = string.sub(k, #prefix + 1)
+  table.insert(out, u)
+  table.insert(out, redis.call('GET', 'ticketentry:' .. ARGV[3] .. ':' .. u) or false)
+end
+return out
 `;
+
+// Upstash deserializa: '5' puede volver como 5, '' como ''. Normaliza a string|null.
+function scriptStr(v: unknown): string | null {
+  return v === null || v === undefined || v === false ? null : String(v);
+}
 
 function presenceKey(ticketId: string, user: string) {
   return `ticketpresence:${ticketId}:${user}`;
@@ -266,56 +302,33 @@ export async function POST(
   // deduplicado 6h para no repetir el aviso en cada poll de 30s.
   flagUnknownIdentity(id, user, ticketNumber ?? null);
 
-  // Todas las lecturas de este poll en UN solo MGET (antes eran 4-5 comandos sueltos,
-  // con el status del ticket leído dos veces): ping/quickmsg propios, asignado
-  // cacheado, contador histórico de colisiones y status cacheado del ticket. Ninguna
-  // depende de otra, así que van juntas antes de todo lo demás.
-  const pingKey = `ping:${id}:${user}`;
-  const quickMsgKey = `quickmsg:${id}:${user}`;
   const assignedTicketId = autotaskTicketId ? String(autotaskTicketId) : id;
-  const [pingedBy, quickMsgReceived, cachedAssignee, pastCollisionsRaw, cachedStatus] = await redis.mget<
-    [string | null, string | null, string | null, number | null, unknown]
-  >(pingKey, quickMsgKey, `ticketassigned:${assignedTicketId}`, `colcount:${id}`, `ticketstatus:${assignedTicketId}`);
-
-  let status: number | null = null;
-  if (autotaskTicketId) {
-    status = await getTicketStatus(String(autotaskTicketId), cachedStatus);
-    if (status !== null) {
-      // Statuses cerrados: por defecto solo 5 (Complete). Configurable en Redis como
-      // JSON array: SET config:closed_statuses "[5,8,29]"
-      const closedRaw = await getCachedConfig('config:closed_statuses');
-      const closedStatuses = redisJson<number[]>(closedRaw, [AUTOTASK_STATUS_COMPLETE]);
-      if (closedStatuses.includes(status)) {
-        // Aunque el ticket esté completado (solo lectura), el recurso principal sigue
-        // siendo información útil de contexto — antes se devolvía assignedTo: null acá,
-        // así que el sidepanel nunca mostraba "Recurso principal" en tickets cerrados.
-        const [assignedTo, statusLabel] = await Promise.all([
-          getAutotaskAssignee(assignedTicketId, cachedAssignee),
-          statusLabelFor(status),
-        ]);
-        return NextResponse.json({ ok: false, completed: true, others: [], assignedTo, statusLabel, assignedPresent: false, pingedBy: null, quickMsg: null, pastCollisions: 0 });
-      }
-    }
-  }
-
-  const configTtl = await getCachedConfig('config:presence_ttl');
+  const [configTtl, closedRaw] = await Promise.all([
+    getCachedConfig('config:presence_ttl'),
+    getCachedConfig('config:closed_statuses'),
+  ]);
   const ttl = clampInt(configTtl, 15, 300, PRESENCE_TTL);
-  // Las 8 escrituras de abajo (antes 8 comandos Redis separados, el grueso del costo
-  // de este endpoint — el más llamado de todo el backend) corren SIEMPRE en cada poll,
-  // así que se colapsan en un solo EVAL. Upstash cobra por comando ejecutado, no por
-  // round-trip: Promise.all/pipeline no ahorraba nada acá, un script sí porque Redis lo
-  // ve como una sola llamada. Mismo comportamiento exacto que antes (mismos NX/EX),
-  // solo que atómico y en 1 comando en vez de 8.
-  await redis.eval(
-    REGISTER_PRESENCE_SCRIPT,
+  // Statuses cerrados: por defecto solo 5 (Complete). Configurable en Redis como
+  // JSON array: SET config:closed_statuses "[5,8,29]"
+  const closedStatuses = redisJson<number[]>(closedRaw, [AUTOTASK_STATUS_COMPLETE]);
+  const myPresenceKey = presenceKey(id, user);
+  const myEntryKey = `ticketentry:${id}:${user}`;
+
+  const res = await redis.eval<string[], unknown[]>(
+    PRESENCE_POLL_SCRIPT,
     [
-      presenceKey(id, user),
+      myPresenceKey,
       ACTIVE_TICKETS_KEY,
-      `ticketentry:${id}:${user}`,
+      myEntryKey,
       `ticketnumber:${id}`,
       `tickettitle:${id}`,
       `ticketurl:${id}`,
       `autotaskid:${id}`,
+      `ping:${id}:${user}`,
+      `quickmsg:${id}:${user}`,
+      `ticketassigned:${assignedTicketId}`,
+      `colcount:${id}`,
+      `ticketstatus:${assignedTicketId}`,
     ],
     [
       String(ttl),
@@ -325,8 +338,41 @@ export async function POST(
       ticketTitle ?? '',
       ticketUrl ?? '',
       autotaskTicketId ? String(autotaskTicketId) : '',
+      `,${closedStatuses.join(',')},`,
     ],
   );
+  const cachedStatus = scriptStr(res[1]);
+  const cachedAssignee = scriptStr(res[2]);
+
+  // Aunque el ticket esté completado (solo lectura), el recurso principal sigue siendo
+  // información útil de contexto para el sidepanel ("Recurso principal").
+  const closedResponse = async (st: number) => {
+    const [assignedTo, statusLabel] = await Promise.all([
+      getAutotaskAssignee(assignedTicketId, cachedAssignee),
+      statusLabelFor(st),
+    ]);
+    return NextResponse.json({ ok: false, completed: true, others: [], assignedTo, statusLabel, assignedPresent: false, pingedBy: null, quickMsg: null, pastCollisions: 0 });
+  };
+  if (res[0] === 'closed') return closedResponse(Number(cachedStatus));
+
+  let status: number | null = null;
+  if (autotaskTicketId) {
+    // Con el status ya cacheado no hay red ni Redis acá; si no estaba, se consulta a
+    // Autotask (y queda cacheado para los próximos polls de todos).
+    status = await getTicketStatus(String(autotaskTicketId), cachedStatus);
+    if (status !== null && cachedStatus === null && closedStatuses.includes(status)) {
+      // El script registró presencia porque todavía no conocía el status: se deshace,
+      // para que un ticket cerrado nunca cuente como ocupado.
+      await redis.del(myPresenceKey, myEntryKey);
+      return closedResponse(status);
+    }
+  }
+
+  const pastCollisionsRaw = res[3];
+  const pingedBy = scriptStr(res[4]);
+  const quickMsgReceived = scriptStr(res[5]);
+  const entryByUser = new Map<string, string | null>();
+  for (let i = 6; i < res.length; i += 2) entryByUser.set(String(res[i]), scriptStr(res[i + 1]));
 
   // Mismo criterio que `user`: los targets de ping son nombres de otros técnicos
   // que también terminan en keys de Redis y en el body de la notificación.
@@ -361,22 +407,12 @@ export async function POST(
     }
   }
 
-  if (pingedBy) {
-    await redis.del(pingKey);
-    if (quickMsgReceived) await redis.del(quickMsgKey);
-  }
-
-  const allKeys = await redis.keys(`ticketpresence:${id}:*`);
-  const otherNames = dedupeOthers(allKeys.map(k => extractUser(k, id)), user);
-
-  const entryTimes = otherNames.length > 0
-    ? await redis.mget<(string | null)[]>(...otherNames.map(u => `ticketentry:${id}:${u}`))
-    : [];
-
+  // El ping propio ya lo consumió (DEL) el script, atómicamente con la lectura.
+  const otherNames = dedupeOthers([...entryByUser.keys()], user);
   const now = Date.now();
-  const others = otherNames.map((name, i) => ({
+  const others = otherNames.map((name) => ({
     name,
-    minutes: minutesSince(entryTimes[i], now),
+    minutes: minutesSince(entryByUser.get(name) ?? null, now),
   }));
 
   // colcount se leyó en el MGET del principio, ANTES del INCR de abajo — si esta misma

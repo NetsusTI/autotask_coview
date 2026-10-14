@@ -284,9 +284,12 @@ export async function getTicketAssignedResourceId(ticketId: string): Promise<num
   }
 }
 
-// Status numérico del ticket — cacheado 90 s para detectar cambios sin martillar la API.
+// Status numérico del ticket — cacheado 5 min (antes 90 s): cada vencimiento cuesta una
+// consulta a Autotask y un SET en Redis por cada ticket abierto, y lo único que cambia
+// es cuánto tarda en notarse que un ticket se cerró mientras alguien lo mira.
 // Status 5 = Complete en Autotask por defecto.
 export const AUTOTASK_STATUS_COMPLETE = 5;
+const STATUS_CACHE_TTL = 300;
 
 // cachedValue: el valor de `ticketstatus:{id}` si el caller ya lo leyó en un MGET
 // (hot path de POST /api/presence/[id]) — evita repetir el GET.
@@ -297,10 +300,10 @@ export async function getTicketStatus(autotaskId: string, cachedValue?: unknown)
   if (cached !== null && cached !== undefined) return cached === '' ? null : Number(cached);
   try {
     const res = await fetch(`${BASE}/Tickets/${autotaskId}?fields=status`, { headers: headers() });
-    if (!res.ok) { await redis.set(cacheKey, '', { ex: 90 }); return null; }
+    if (!res.ok) { await redis.set(cacheKey, '', { ex: STATUS_CACHE_TTL }); return null; }
     const data = await res.json();
     const status: number | null = data?.item?.status ?? null;
-    await redis.set(cacheKey, status === null ? '' : String(status), { ex: 90 });
+    await redis.set(cacheKey, status === null ? '' : String(status), { ex: STATUS_CACHE_TTL });
     return status;
   } catch {
     return null;
@@ -340,7 +343,7 @@ export async function applyWebhookTicketUpdate(
   const assignedKey = `ticketassigned:${id}`;
 
   if (known.status !== undefined) {
-    ops.push(redis.set(statusKey, known.status === null ? '' : String(known.status), { ex: 90 }));
+    ops.push(redis.set(statusKey, known.status === null ? '' : String(known.status), { ex: STATUS_CACHE_TTL }));
   } else if (invalidateIfUnknown.status) {
     ops.push(redis.del(statusKey));
   }

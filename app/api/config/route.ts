@@ -1,30 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { checkApiKey, redis } from '@/lib/ticket-lock';
+import { checkApiKey, redis, redisJson } from '@/lib/ticket-lock';
 import { checkAdminSession } from '@/lib/admin-auth';
 
 export async function GET(request: NextRequest) {
   if (!checkApiKey(request)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-  const [teamsWebhook, presenceTtl, watchQueues, criticalPriorities, slaWarnMin, autotaskUiBase, notifEnabled, autotaskNotesEnabled, workHoursRaw] = await Promise.all([
-    redis.get<string>('config:teams_webhook'),
-    redis.get<string>('config:presence_ttl'),
-    redis.get<string>('config:watch_queues'),
-    redis.get<string>('config:critical_priorities'),
-    redis.get<string>('config:sla_warn_min'),
-    redis.get<string>('config:autotask_ui_base'),
-    redis.get<string>('config:notif_enabled'),
-    redis.get<string>('config:autotask_notes_enabled'),
-    redis.get<string>('config:work_hours'),
-  ]);
+  // Un solo MGET en vez de 9 GET. Los valores llegan ya deserializados por
+  // @upstash/redis ("0"/"1" vuelven como número, JSON como objeto), de ahí los String()
+  // y redisJson() — compararlos contra '0'/'1' tal cual nunca calzaba.
+  const [teamsWebhook, presenceTtl, watchQueues, criticalPriorities, slaWarnMin, autotaskUiBase, notifEnabled, autotaskNotesEnabled, workHoursRaw] = await redis.mget<unknown[]>(
+    'config:teams_webhook',
+    'config:presence_ttl',
+    'config:watch_queues',
+    'config:critical_priorities',
+    'config:sla_warn_min',
+    'config:autotask_ui_base',
+    'config:notif_enabled',
+    'config:autotask_notes_enabled',
+    'config:work_hours',
+  );
   return NextResponse.json({
     teamsWebhook: teamsWebhook ?? '',
-    presenceTtl: presenceTtl ? parseInt(presenceTtl) : 40,
+    presenceTtl: presenceTtl ? parseInt(String(presenceTtl)) : 40,
     watchQueues: watchQueues ?? '',
     criticalPriorities: criticalPriorities ?? '[1]',
-    slaWarnMin: slaWarnMin ? parseInt(slaWarnMin) : 30,
+    slaWarnMin: slaWarnMin ? parseInt(String(slaWarnMin)) : 30,
     autotaskUiBase: autotaskUiBase ?? '',
-    notifEnabled: notifEnabled !== '0',
-    autotaskNotesEnabled: autotaskNotesEnabled === '1',
-    workHours: workHoursRaw ? (() => { try { return JSON.parse(workHoursRaw); } catch { return null; } })() : null,
+    notifEnabled: String(notifEnabled) !== '0',
+    autotaskNotesEnabled: String(autotaskNotesEnabled) === '1',
+    workHours: redisJson(workHoursRaw, null),
   });
 }
 

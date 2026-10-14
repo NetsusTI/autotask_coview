@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { checkApiKey, redis, ACTIVE_TICKETS_KEY } from '@/lib/ticket-lock';
+import { checkApiKey, redis, redisJson, ACTIVE_TICKETS_KEY } from '@/lib/ticket-lock';
 import { logCentralNotification } from '@/lib/notif-poll';
 import { supabase } from '@/lib/supabase/client';
 import { lookupResourceId } from '@/lib/supabase/resources';
 import { dedupeOthers, minutesSince, formatDuration } from '@/lib/collision';
 import { clampInt } from '@/lib/num';
-import { createTicketNote, getTicketAssignedResourceId, getResourceName, getTicketStatus, getTicketStatusLabel, AUTOTASK_STATUS_COMPLETE } from '@/lib/autotask';
+import { createTicketNote, getTicketAssignedResourceId, getResourceName, getTicketStatus, statusLabelFor, AUTOTASK_STATUS_COMPLETE } from '@/lib/autotask';
 import { isValidTicketId, sanitizeUser } from '@/lib/sanitize';
 import { logError } from '@/lib/error-log';
 
@@ -73,7 +73,7 @@ async function getAutotaskAssignee(ticketId: string, cachedValue?: string | null
 async function maybeCreateAutotaskNote(numericTicketId: string | null, title: string, description: string) {
   if (!numericTicketId) return;
   const enabled = await getCachedConfig('config:autotask_notes_enabled');
-  if (enabled !== '1') return;
+  if (String(enabled) !== '1') return; // "1" vuelve deserializado como número 1
   createTicketNote(Number(numericTicketId), { title, description });
 }
 
@@ -82,10 +82,12 @@ async function getWebhookUrl(): Promise<string | null> {
 }
 
 async function isWithinWorkHours(): Promise<boolean> {
-  const raw = await getCachedConfig('config:work_hours');
-  if (!raw) return true;
+  const wh = redisJson<{ enabled?: boolean; start?: number; end?: number; tz?: string } | null>(
+    await getCachedConfig('config:work_hours'), null,
+  );
+  if (!wh || wh.enabled === false) return true;
   try {
-    const { start = 8, end = 18, tz = 'America/Santiago' } = JSON.parse(raw);
+    const { start = 8, end = 18, tz = 'America/Santiago' } = wh;
     const now = new Date();
     const hour = parseInt(new Intl.DateTimeFormat('en', { hour: 'numeric', hour12: false, timeZone: tz }).format(now));
     const dayName = new Intl.DateTimeFormat('en', { weekday: 'short', timeZone: tz }).format(now);
@@ -98,14 +100,22 @@ async function isWithinWorkHours(): Promise<boolean> {
 // comentario junto al call site. Fire-and-forget (no se hace `await` sobre esto
 // en el caller): un problema acá nunca debe demorar ni romper la respuesta de
 // presencia real.
+// Antes, para un técnico SÍ reconocido (el caso normal) no quedaba ninguna marca, así
+// que en cada poll se repetían un GET a Redis y una consulta a Supabase. Ahora el
+// resultado se recuerda en memoria: 30 min si el nombre coincide con el roster, 6h por
+// (ticket, nombre) si no — el SET NX en Redis sigue siendo el dedupe compartido del aviso.
+const identityMemo = new Map<string, number>();
 async function flagUnknownIdentity(ticketId: string, user: string, ticketNumber: string | null): Promise<void> {
   try {
-    const dedupeKey = `identitycheck:${ticketId}:${user}`;
-    const seen = await redis.get<string>(dedupeKey);
-    if (seen) return;
+    const now = Date.now();
+    const userKey = `u:${user}`;
+    const pairKey = `t:${ticketId}:${user}`;
+    if ((identityMemo.get(userKey) ?? 0) > now || (identityMemo.get(pairKey) ?? 0) > now) return;
     const resourceId = await lookupResourceId(user);
-    if (resourceId !== null) return; // coincide con un técnico activo del roster
-    await redis.set(dedupeKey, '1', { ex: 6 * 3600 });
+    if (resourceId !== null) { identityMemo.set(userKey, now + 30 * 60 * 1000); return; }
+    identityMemo.set(pairKey, now + 6 * 3600 * 1000);
+    const first = await redis.set(`identitycheck:${ticketId}:${user}`, '1', { ex: 6 * 3600, nx: true });
+    if (first !== 'OK') return; // otra instancia ya avisó
     logCentralNotification({
       type: 'identity_mismatch',
       title: 'Nombre no reconocido en el roster',
@@ -256,20 +266,32 @@ export async function POST(
   // deduplicado 6h para no repetir el aviso en cada poll de 30s.
   flagUnknownIdentity(id, user, ticketNumber ?? null);
 
+  // Todas las lecturas de este poll en UN solo MGET (antes eran 4-5 comandos sueltos,
+  // con el status del ticket leído dos veces): ping/quickmsg propios, asignado
+  // cacheado, contador histórico de colisiones y status cacheado del ticket. Ninguna
+  // depende de otra, así que van juntas antes de todo lo demás.
+  const pingKey = `ping:${id}:${user}`;
+  const quickMsgKey = `quickmsg:${id}:${user}`;
+  const assignedTicketId = autotaskTicketId ? String(autotaskTicketId) : id;
+  const [pingedBy, quickMsgReceived, cachedAssignee, pastCollisionsRaw, cachedStatus] = await redis.mget<
+    [string | null, string | null, string | null, number | null, unknown]
+  >(pingKey, quickMsgKey, `ticketassigned:${assignedTicketId}`, `colcount:${id}`, `ticketstatus:${assignedTicketId}`);
+
+  let status: number | null = null;
   if (autotaskTicketId) {
-    const status = await getTicketStatus(String(autotaskTicketId));
+    status = await getTicketStatus(String(autotaskTicketId), cachedStatus);
     if (status !== null) {
       // Statuses cerrados: por defecto solo 5 (Complete). Configurable en Redis como
       // JSON array: SET config:closed_statuses "[5,8,29]"
       const closedRaw = await getCachedConfig('config:closed_statuses');
-      const closedStatuses: number[] = closedRaw ? JSON.parse(closedRaw) : [AUTOTASK_STATUS_COMPLETE];
+      const closedStatuses = redisJson<number[]>(closedRaw, [AUTOTASK_STATUS_COMPLETE]);
       if (closedStatuses.includes(status)) {
         // Aunque el ticket esté completado (solo lectura), el recurso principal sigue
         // siendo información útil de contexto — antes se devolvía assignedTo: null acá,
         // así que el sidepanel nunca mostraba "Recurso principal" en tickets cerrados.
         const [assignedTo, statusLabel] = await Promise.all([
-          getAutotaskAssignee(String(autotaskTicketId)),
-          getTicketStatusLabel(String(autotaskTicketId)),
+          getAutotaskAssignee(assignedTicketId, cachedAssignee),
+          statusLabelFor(status),
         ]);
         return NextResponse.json({ ok: false, completed: true, others: [], assignedTo, statusLabel, assignedPresent: false, pingedBy: null, quickMsg: null, pastCollisions: 0 });
       }
@@ -339,18 +361,6 @@ export async function POST(
     }
   }
 
-  // Se juntan acá 4 lecturas que antes eran 4 comandos Redis separados (2 de ellas ya
-  // venían fusionadas): ping/quickmsg propios, el asignado cacheado de Autotask, y el
-  // contador histórico de colisiones — todas de solo lectura, ninguna depende del
-  // resultado de otra, así que entran en el mismo mget.
-  const pingKey = `ping:${id}:${user}`;
-  const quickMsgKey = `quickmsg:${id}:${user}`;
-  const assignedTicketId = autotaskTicketId ? String(autotaskTicketId) : id;
-  const assignedKey = `ticketassigned:${assignedTicketId}`;
-  const colcountKey = `colcount:${id}`;
-  const [pingedBy, quickMsgReceived, cachedAssignee, pastCollisionsRaw] = await redis.mget<
-    [string | null, string | null, string | null, number | null]
-  >(pingKey, quickMsgKey, assignedKey, colcountKey);
   if (pingedBy) {
     await redis.del(pingKey);
     if (quickMsgReceived) await redis.del(quickMsgKey);
@@ -369,6 +379,9 @@ export async function POST(
     minutes: minutesSince(entryTimes[i], now),
   }));
 
+  // colcount se leyó en el MGET del principio, ANTES del INCR de abajo — si esta misma
+  // llamada abre una colisión nueva, el valor leído quedó una unidad atrás.
+  let collisionOpenedNow = false;
   if (others.length > 0) {
     const colKey = `colactive:${id}:${user}`;
     // nx: true hace que esto sea el check-y-marca atómico — antes era un
@@ -377,6 +390,7 @@ export async function POST(
     // ambas y duplicar el webhook de Teams / la fila en collision_history.
     const firstToMark = await redis.set(colKey, '1', { ex: PRESENCE_TTL * 3, nx: true });
     if (firstToMark === 'OK') {
+      collisionOpenedNow = true;
       const allInCollision = [user, ...otherNames];
       await Promise.all([
         redis.incr(`colcount:${id}`).then(() => redis.expire(`colcount:${id}`, 180 * 24 * 3600)),
@@ -448,9 +462,9 @@ export async function POST(
 
   const [assignedTo, statusLabel] = await Promise.all([
     getAutotaskAssignee(assignedTicketId, cachedAssignee),
-    autotaskTicketId ? getTicketStatusLabel(String(autotaskTicketId)) : Promise.resolve(null),
+    statusLabelFor(status),
   ]);
-  const pastCollisions = pastCollisionsRaw ?? 0;
+  const pastCollisions = (Number(pastCollisionsRaw) || 0) + (collisionOpenedNow ? 1 : 0);
   // El asignado puede estar entre los "otros" presentes ahora mismo — si es así,
   // no solo sabemos quién es el recurso principal, sino que está trabajándolo.
   const assignedPresent = assignedTo
@@ -493,7 +507,7 @@ export async function DELETE(
           // (TTL venció o se perdió), insertamos una fila nueva ya con la duración.
           try {
             const supaId = await redis.get<string>(`colsupaid:${id}`);
-            const colUsersForSupa: string[] = colUsersRaw ? JSON.parse(colUsersRaw) : [user];
+            const colUsersForSupa = redisJson<string[]>(colUsersRaw, [user]);
             if (supaId) {
               await supabase.from('collision_history').update({ duration_ms: duration }).eq('id', supaId);
               await redis.del(`colsupaid:${id}`);
@@ -510,7 +524,7 @@ export async function DELETE(
             logError('presence:collision-resolve', e, `ticket=${id}`);
           }
           // Notify Teams that the collision was resolved
-          const colUsers: string[] = colUsersRaw ? JSON.parse(colUsersRaw) : [user];
+          const colUsers = redisJson<string[]>(colUsersRaw, [user]);
           const resolutionDisplay = ticketTitle
             ? `${ticketNumber ?? `#${id}`} — ${ticketTitle}`
             : (ticketNumber ?? `#${id}`);

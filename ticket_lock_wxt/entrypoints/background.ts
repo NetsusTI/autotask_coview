@@ -287,9 +287,11 @@ export default defineBackground(() => {
   // Requiere el permiso 'alarms' en wxt.config.ts.
   step('keep-alive', () => {
     chrome.alarms.create('netsus-keepalive', { periodInMinutes: 0.5 });
-    chrome.alarms.onAlarm.addListener((alarm) => {
-      if (alarm.name === 'netsus-keepalive') updateBadge();
-    });
+    // Despertar el service worker alcanza — el evento de la alarma ya lo mantiene vivo.
+    // Antes este listener además llamaba updateBadge(), que pega a /api/presence/status:
+    // con eso el badge se refrescaba cada 30s POR la alarma, además del setInterval de
+    // abajo, y duplicaba ese tráfico contra la cuota de Redis.
+    chrome.alarms.onAlarm.addListener(() => {});
   });
 
   // Los content scripts abren un puerto contra nosotros para detectar al instante
@@ -306,7 +308,9 @@ export default defineBackground(() => {
   });
 
   step('feed de notificaciones', () => {
-    setInterval(pollNotificationFeed, 30000);
+    // 60s: n1/n2/n5 llegan además por el webhook de Autotask, y n3/n4 (respuesta de
+    // cliente, SLA) toleran un minuto de demora. Cada consulta de feed cuesta Redis.
+    setInterval(pollNotificationFeed, 60000);
     pollNotificationFeed();
   });
 

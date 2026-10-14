@@ -94,7 +94,10 @@ export interface FeedItem {
 }
 
 const LOCK_KEY = 'notif:poll_lock';
-const LOCK_TTL_DEFAULT = 50;      // s — un ciclo por ventana
+// s — un ciclo por ventana. 120 y no 50: cada ciclo cuesta varios comandos Redis por
+// técnico activo, y n1/n2/n5 ya llegan casi al instante por el webhook de Autotask;
+// el poller es la red de seguridad (y la vía de n3/n4, que toleran 2 min de demora).
+const LOCK_TTL_DEFAULT = 120;
 const LASTPOLL_KEY = 'notif:lastpoll';
 const ACTIVE_KEY = 'team:resources';   // ZSET member=resourceID, score=lastSeenMs
 const ACTIVE_WINDOW_MS = 2 * 3600 * 1000;
@@ -102,8 +105,7 @@ const FEED_TTL = 24 * 3600;
 const FEED_MAX = 50;
 
 // --- Config (editable desde el panel admin) ---
-async function getJsonNumbers(key: string, fallback: number[]): Promise<number[]> {
-  const raw = await redis.get<string>(key);
+function parseJsonNumbers(raw: unknown, fallback: number[]): number[] {
   if (!raw) return fallback;
   try {
     const arr = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -114,26 +116,45 @@ async function getJsonNumbers(key: string, fallback: number[]): Promise<number[]
 }
 
 export async function getNotifConfig() {
-  const [criticalPriorities, slaRaw, uiBase, enabledRaw] = await Promise.all([
-    getJsonNumbers('config:critical_priorities', [1]),
-    redis.get<string>('config:sla_warn_min'),
-    redis.get<string>('config:autotask_ui_base'),
-    redis.get<string>('config:notif_enabled'),
-  ]);
+  const [criticalRaw, slaRaw, uiBase, enabledRaw] = await redis.mget<
+    [unknown, string | null, string | null, string | null]
+  >('config:critical_priorities', 'config:sla_warn_min', 'config:autotask_ui_base', 'config:notif_enabled');
   const slaWarnMin = clampInt(slaRaw, 5, 1440, 30);
   return {
-    criticalPriorities,
+    criticalPriorities: parseJsonNumbers(criticalRaw, [1]),
     slaWarnMin,
     uiBase: uiBase ?? null,
-    enabled: enabledRaw !== '0',
+    enabled: String(enabledRaw) !== '0', // "0" vuelve deserializado como número 0
   };
 }
 
+// Cache en memoria por instancia (se pierde al reciclarse la función, no hay nada que
+// limpiar). Para valores que cambian poco y se leían en CADA llamada de un endpoint
+// que todos los técnicos llaman cada pocos segundos.
+const memCache = new Map<string, { value: unknown; expires: number }>();
+async function memoized<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+  const hit = memCache.get(key);
+  if (hit && hit.expires > Date.now()) return hit.value as T;
+  const value = await load();
+  memCache.set(key, { value, expires: Date.now() + ttlMs });
+  return value;
+}
+
 // --- Recursos activos ---
+// Llamada cada vez que un técnico consulta su feed (cada pocos segundos). El nombre→ID
+// casi nunca cambia y la ventana de "activo" es de 2h, así que no hace falta pegarle a
+// Redis en cada llamada: se resuelve el ID una vez cada 10 min y se refresca el score
+// del ZSET como mucho cada 5 min por instancia.
+const ZADD_THROTTLE_MS = 5 * 60 * 1000;
+const lastZadd = new Map<number, number>();
 export async function registerActiveResource(name: string): Promise<number | null> {
-  const rid = await resolveResourceIdByName(name);
+  const rid = await memoized(`rid:${name.toLowerCase()}`, 10 * 60 * 1000, () => resolveResourceIdByName(name));
   if (rid === null) return null;
-  await redis.zadd(ACTIVE_KEY, { score: Date.now(), member: String(rid) });
+  const now = Date.now();
+  if (now - (lastZadd.get(rid) ?? 0) > ZADD_THROTTLE_MS) {
+    await redis.zadd(ACTIVE_KEY, { score: now, member: String(rid) });
+    lastZadd.set(rid, now);
+  }
   return rid;
 }
 
@@ -175,9 +196,19 @@ export async function drainFeed(rid: number): Promise<FeedItem[]> {
 // MISMO dedupe (notif:seen:<dedupeKey>) que usa el poll de abajo — así el webhook (más
 // rápido) y la reconciliación periódica de runPoll() nunca duplican un aviso, sin
 // necesidad de coordinarse entre sí más que compartiendo el formato de dedupeKey.
+// Espejo en memoria de notif:seen:* — un ticket crítico o con SLA vencido sigue
+// "disparando" en cada ciclo del poller hasta que se cierra, y cada vez costaba un
+// SET NX solo para descubrir que ya estaba avisado. Si esta instancia ya lo vio, se
+// salta Redis; si no (instancia nueva), cae al SET NX de siempre, que sigue siendo la
+// fuente de verdad compartida.
+const seenLocal = new Map<string, number>();
 export async function pushEvent(resourceIDs: number[], item: FeedItem, seenTtlSec: number): Promise<boolean> {
   const seenKey = `notif:seen:${item.dedupeKey}`;
+  const now = Date.now();
+  if ((seenLocal.get(seenKey) ?? 0) > now) return false;
   const first = await redis.set(seenKey, '1', { ex: seenTtlSec, nx: true });
+  if (seenLocal.size > 5000) for (const [k, exp] of seenLocal) if (exp <= now) seenLocal.delete(k);
+  seenLocal.set(seenKey, now + seenTtlSec * 1000);
   if (first !== 'OK') return false; // ya emitido dentro de la ventana
   const payload = JSON.stringify(item);
   if (resourceIDs.length) {
@@ -227,14 +258,24 @@ export function slaEvents(t: AutotaskTicket, warnMin: number, now: number): { ki
 }
 
 // --- Poll principal ---
+let lastLockAttempt = 0;
 export async function runPoll(force = false): Promise<{ ran: boolean; counts?: Record<string, number> }> {
   if (!autotaskConfigured()) return { ran: false };
 
   // Dial preparado para cuando el webhook de Autotask (app/api/webhooks/autotask/)
   // lleve un tiempo confiable en producción — hoy sigue en 50s por defecto (sin
   // cambio de comportamiento) hasta que se suba a mano desde el panel admin.
-  const lockTtlRaw = await redis.get<string>('config:notif_poll_interval_sec');
+  const lockTtlRaw = await memoized('notif_poll_interval', 60_000, () => redis.get<string>('config:notif_poll_interval_sec'));
   const lockTtl = clampInt(lockTtlRaw, 30, 3600, LOCK_TTL_DEFAULT);
+
+  // runPoll() se llama de forma oportunista en CADA consulta de feed de cada técnico.
+  // Si esta misma instancia ya intentó tomar el lock dentro de la ventana, el lock
+  // sigue tomado (por ella o por otra) — no hace falta gastar un SET NX para saberlo.
+  if (!force) {
+    const now = Date.now();
+    if (now - lastLockAttempt < lockTtl * 1000) return { ran: false };
+    lastLockAttempt = now;
+  }
 
   if (force) {
     await redis.set(LOCK_KEY, '1', { ex: lockTtl });
@@ -336,13 +377,19 @@ export async function runPoll(force = false): Promise<{ ran: boolean; counts?: R
           if (ok) n2++;
         }
       }
-      // Actualiza el set conocido.
-      await redis.del(knownKey);
-      if (currentIds.length) {
-        await redis.sadd(knownKey, currentIds[0], ...currentIds.slice(1));
-        await redis.expire(knownKey, 3 * 24 * 3600);
+      // Actualiza el set conocido — solo si cambió. Antes se reescribía entero (DEL +
+      // SADD + EXPIRE + SET) en cada ciclo para cada técnico aunque nada hubiera
+      // cambiado, que era el grueso del costo del poller. TTL de 30 días porque ya no se
+      // renueva en cada ciclo: tiene que sobrevivir semanas sin cambios de asignación.
+      const changed = currentIds.length !== known.size || currentIds.some((id) => !known.has(id));
+      if (changed) {
+        await redis.del(knownKey);
+        if (currentIds.length) {
+          await redis.sadd(knownKey, currentIds[0], ...currentIds.slice(1));
+          await redis.expire(knownKey, 30 * 24 * 3600);
+        }
       }
-      await redis.set(`notif:seeded:${rid}`, '1', { ex: 7 * 24 * 3600 });
+      if (changed || !seeded) await redis.set(`notif:seeded:${rid}`, '1', { ex: 30 * 24 * 3600 });
 
       // n4 SLA
       for (const t of mine) {

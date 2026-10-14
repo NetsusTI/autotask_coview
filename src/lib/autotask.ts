@@ -288,11 +288,13 @@ export async function getTicketAssignedResourceId(ticketId: string): Promise<num
 // Status 5 = Complete en Autotask por defecto.
 export const AUTOTASK_STATUS_COMPLETE = 5;
 
-export async function getTicketStatus(autotaskId: string): Promise<number | null> {
+// cachedValue: el valor de `ticketstatus:{id}` si el caller ya lo leyó en un MGET
+// (hot path de POST /api/presence/[id]) — evita repetir el GET.
+export async function getTicketStatus(autotaskId: string, cachedValue?: unknown): Promise<number | null> {
   if (!autotaskConfigured()) return null;
   const cacheKey = `ticketstatus:${autotaskId}`;
-  const cached = await redis.get<string>(cacheKey);
-  if (cached !== null) return cached === '' ? null : Number(cached);
+  const cached = cachedValue !== undefined ? cachedValue : await redis.get<string>(cacheKey);
+  if (cached !== null && cached !== undefined) return cached === '' ? null : Number(cached);
   try {
     const res = await fetch(`${BASE}/Tickets/${autotaskId}?fields=status`, { headers: headers() });
     if (!res.ok) { await redis.set(cacheKey, '', { ex: 90 }); return null; }
@@ -373,9 +375,24 @@ export async function applyWebhookTicketUpdate(
 // porque los picklists casi no cambian.
 const STATUS_LABEL_CACHE_KEY = 'autotask:status_labels';
 
+// Además del cache de 24h en Redis, una copia en memoria por instancia: se consultaba
+// en cada poll de presencia de cada técnico, para un dato que cambia una vez al año.
+let statusLabelMem: { map: Record<number, string>; expires: number } | null = null;
+
 async function getStatusLabelMap(): Promise<Record<number, string>> {
-  const cached = await redis.get<string>(STATUS_LABEL_CACHE_KEY);
-  if (cached) {
+  if (statusLabelMem && statusLabelMem.expires > Date.now()) return statusLabelMem.map;
+  const map = await loadStatusLabelMap();
+  if (Object.keys(map).length) statusLabelMem = { map, expires: Date.now() + 3600 * 1000 };
+  return map;
+}
+
+async function loadStatusLabelMap(): Promise<Record<number, string>> {
+  // @upstash/redis ya devuelve el JSON parseado como objeto — un JSON.parse() sobre eso
+  // tiraba siempre, y el mapa se volvía a pedir a Autotask (y a reescribir en Redis) en
+  // cada llamada en vez de leerse del cache.
+  const cached = await redis.get<Record<number, string> | string>(STATUS_LABEL_CACHE_KEY);
+  if (cached && typeof cached === 'object') return cached;
+  if (typeof cached === 'string' && cached) {
     try { return JSON.parse(cached); } catch { /* recae en refetch */ }
   }
   if (!autotaskConfigured()) return {};
@@ -400,8 +417,13 @@ async function getStatusLabelMap(): Promise<Record<number, string>> {
 // Combina getTicketStatus() con el nombre real del picklist — null si no se pudo
 // resolver cualquiera de los dos (ticket no encontrado, credenciales, etc).
 export async function getTicketStatusLabel(autotaskId: string): Promise<string | null> {
-  const [status, labels] = await Promise.all([getTicketStatus(autotaskId), getStatusLabelMap()]);
+  return statusLabelFor(await getTicketStatus(autotaskId));
+}
+
+// Igual que getTicketStatusLabel, pero con el status ya resuelto (sin volver a leerlo).
+export async function statusLabelFor(status: number | null): Promise<string | null> {
   if (status === null) return null;
+  const labels = await getStatusLabelMap();
   return labels[status] ?? null;
 }
 
